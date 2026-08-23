@@ -1193,7 +1193,9 @@ export function apply(ctx) {
       root: globalDefaultRoot(),
       recordModel: { provider: '', model: '' },
       recentOverviewN: 3, cascadeDepth: 3, archiveDays: 30,
-      activeWorksTokens: 2,  // 会话工作记录链总量预算（k token，超预算压缩旧记录为指向+短摘要）
+      // 总结摘要字数（k token，默认 2）：统一控制 ①works 记录链总量预算 ②B-2 注入【本会话现有工作信息】软限制；
+      // 换算走 estimateTokens+langTokens（中文约 1.5 字/token）。旧 activeWorksTokens 值迁移到此。
+      summaryCharsK: 2,
       queryHistoryN: 0, updateHistoryN: 0, historyPageSize: 20,
       rootUserSet: false,
       // 检索时间衰减（天）：周期/活跃索引引用得分按此线性衰减（默认 30 天 100%→20%）
@@ -1646,10 +1648,15 @@ export function apply(ctx) {
         summaryChanged = true
       }
     }
-    // works 总量预算（activeWorksTokens k token）：超预算时从最旧记录开始压缩为
+    // works 总量预算（总结摘要字数 summaryCharsK k token）：超预算时从最旧记录开始压缩为
     // "保留指向链接 + 正文前 20 字"（想看细节点链接查原文/历史），直到总量合规——增量是整合不是堆叠
     if (recordChanged && Array.isArray(act.records) && act.records.length) {
-      const budgetChars = Math.max(500, Number(cfg().activeWorksTokens) || 2) * 1500  // 中文约 1.5 字/token 粗略估算
+      // k token → 字符预算：按内部语言表换算（中文约 1.5 字/token，取各类 per 最大值粗估，下限 500 字）
+      const charsK = Math.max(1, Number(cfg().summaryCharsK) || 2)
+      const langTable = (Array.isArray(adminCfg().langTokens) && adminCfg().langTokens.length) ? adminCfg().langTokens : [{ kind: 'cn', per: 1.5 }, { kind: 'en', per: 4 }]
+      let maxPer = 1.5
+      for (const lt of langTable) { if (lt && typeof lt.per === 'number') maxPer = Math.max(maxPer, lt.per) }
+      const budgetChars = Math.max(500, Math.round(charsK * 1000 * maxPer))
       const linkRe = /\[[^\]]*\]\([^)]*\)/g
       let total = 0
       for (const r of act.records) total += String(r.text || '').length
@@ -2944,7 +2951,7 @@ export function apply(ctx) {
     const c = cfg()
     let changed = false
     const patch = (args && args.patch) || {}
-    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'activeWorksTokens']
+    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'summaryCharsK']
     for (const k of keys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
     // indexScore（活跃索引 score 参数）子对象
     if (patch.indexScore && typeof patch.indexScore === 'object') {
@@ -3416,6 +3423,7 @@ export function apply(ctx) {
       '   - 仅当内容未变或无需更新时省略 op。',
       '   - 无无缘无故的指向：每条记录必须带真实溯源（事件/会话@轮次[:step]/关键词）；用户手动操作豁免；',
       '   - 重要内容先落关键词记忆，当前活跃里再指向它。',
+      '8. 字数限制：注入的【本会话现有工作信息】受"总结摘要字数"（k token）限制，**md 格式的引用指向超链接不计入字数**；若注入内容注明"仅注入前 Nk token"，以链接指向的原文为准。你的输出受输出上限（outputTokens）约束——这是硬上限，到达即截断；在限制内应完整表达，不要为凑字数堆叠。',
     ].join('\n')
   }
 
@@ -3971,10 +3979,24 @@ function parseAdminJson(text) {
         if (aggT && !isTombstone(aggT) && aggT.kind === 'event' && Array.isArray(aggT.trackMeta) && aggT.trackMeta.length) trackedStatus = '已被跟踪（跟踪基准见聚合文件 trackMeta）'
       } catch (e6) {}
       if (cur && cur.text && String(cur.text).trim()) {
-        items.unshift({ id: sid + '@' + turn + ':curwork', text: '【本会话现有工作信息】\n' + String(cur.text).slice(0, 1500) + '\n\n【会话跟踪状态】' + trackedStatus + '。请参考上述"现有工作信息"判断本轮进展的 op（更新/合并/覆盖/新增），并保持内容精简。' })
+        // 软限制（总结摘要字数 summaryCharsK k token）：正文（剥掉 md 超链接）超预算 → 保留链接 + 关键句 + 注明"完整内容见链接"；
+        // 不硬截断（允许略超），输出上限由 outputTokens 兜底
+        let workText = String(cur.text)
+        const charsK2 = Math.max(1, Number(cfg().summaryCharsK) || 2)
+        const linkRe2 = /\[[^\]]*\]\([^)]*\)/g
+        const bodyTokens = estimateTokens(workText.replace(linkRe2, ''), adminCfg().langTokens)
+        let injectNote = ''
+        if (bodyTokens > charsK2 * 1000) {
+          const links2 = (workText.match(linkRe2) || []).join(' ')
+          const body2 = workText.replace(linkRe2, '').trim()
+          const keySent = body2.slice(0, 400)
+          workText = [links2 ? '【指向】' + links2 : '', keySent ? '【关键句】' + keySent : '', '（完整内容见上述链接指向的原文 会话@轮次，当前仅注入前 ' + charsK2 + 'k token）'].filter(Boolean).join('\n')
+          injectNote = '（注入已按总结摘要字数 ' + charsK2 + 'k token 截取，完整内容见链接指向的原文）'
+        }
+        items.unshift({ id: sid + '@' + turn + ':curwork', text: '【本会话现有工作信息】\n' + workText + '\n\n【会话跟踪状态】' + trackedStatus + '。请参考上述"现有工作信息"判断本轮进展的 op（更新/合并/覆盖/新增）。字数限制：' + charsK2 + 'k token（md 超链接不计入）；你的输出不得超过输出上限（' + (Number(adminCfg().outputTokens) || 4000) + ' token）。保持内容精简。' + injectNote })
       } else if (cur) {
         // 程序已建空白段（新会话首次有效总结）：提示填充本会话工作段落（段已存在，无需 prepend 新建）
-        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】当前为空（本会话首次总结，程序已为本会话创建空白工作段）。\n【会话跟踪状态】' + trackedStatus + '。\n请按工作事情和进度总结本轮内容，写入本会话的工作段落（op 用 append 更新已有空白段即可），带 轮次/轮次+步 指向对应信息，并保持内容精简。' })
+        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】当前为空（本会话首次总结，程序已为本会话创建空白工作段）。\n【会话跟踪状态】' + trackedStatus + '。\n请按工作事情和进度总结本轮内容，写入本会话的工作段落（op 用 append 更新已有空白段即可），带 轮次/轮次+步 指向对应信息。字数限制：' + (Math.max(1, Number(cfg().summaryCharsK) || 2)) + 'k token（md 超链接不计入）；你的输出不得超过输出上限（' + (Number(adminCfg().outputTokens) || 4000) + ' token）。保持内容精简。' })
       } else {
         // 兜底：程序未建段（异常路径）→ 提示创建
         items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】无 —— 本次为全新会话/新窗口，当前活跃中还没有本会话的"会话工作"段落。请用 op="prepend" 创建本会话的工作段落（插到最前，旧的往后顶），并保持内容精简。\n【会话跟踪状态】' + trackedStatus })
@@ -5817,6 +5839,7 @@ function parseAdminJson(text) {
           updateHistoryN: c.updateHistoryN || 0,
           historyPageSize: c.historyPageSize || 20,
           summaryInjectChars: c.summaryInjectChars || 300,
+          summaryCharsK: (c.summaryCharsK === undefined || c.summaryCharsK === null) ? 2 : c.summaryCharsK,
           recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
           admin: {
             enabled: !!adm.enabled,
@@ -5935,7 +5958,7 @@ function parseAdminJson(text) {
       const patch = (args && args.patch) || {}
       const c = cfg()
       let changed = false
-      const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'activeWorksTokens']
+      const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'summaryCharsK']
       for (const k of baseKeys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
       if (patch.recordModel && typeof patch.recordModel === 'object') {
         c.recordModel = c.recordModel || { provider: '', model: '' }
@@ -6023,6 +6046,7 @@ function parseAdminJson(text) {
           cascadeDepth: c.cascadeDepth === undefined ? 1 : c.cascadeDepth,
           queryHistoryN: c.queryHistoryN || 0, updateHistoryN: c.updateHistoryN || 0, historyPageSize: c.historyPageSize || 20,
           summaryInjectChars: c.summaryInjectChars || 300,
+          summaryCharsK: (c.summaryCharsK === undefined || c.summaryCharsK === null) ? 2 : c.summaryCharsK,
           recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
           admin: {
             enabled: !!adm.enabled,

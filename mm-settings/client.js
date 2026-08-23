@@ -501,7 +501,7 @@ window.__ModuleLoader__.load({
         Row('记忆根目录', Input({ value: cfg.root || '', onChange: function (e) { set('root', e.target.value) } }), '所有记忆文件存放的文件夹路径'),
         Row('归档天数', Num({ value: cfg.archiveDays || 30, onChange: function (e) { set('archiveDays', Number(e.target.value) || 30) } }), '记忆文件在 N 天后进入归档压缩'),
         Row('记忆衰减天数', Num({ value: cfg.decayDays || 30, onChange: function (e) { set('decayDays', Number(e.target.value) || 30) } }), '记忆得分随时间衰减的窗口（天）：查询时越久远的记忆得分越低，超过窗口后降到衰减下限'),
-        Row('会话工作总量（k token）', Num({ value: cfg.activeWorksTokens === undefined ? 2 : cfg.activeWorksTokens, onChange: function (e) { set('activeWorksTokens', Math.max(1, Number(e.target.value) || 2)) } }), '当前活跃"会话工作"记录链的总量预算（k token）；超过后自动把最旧记录压缩为"指向+短摘要"（想看细节点链接查原文/历史），增量是整合不是无限制堆叠'),
+        Row('总结摘要字数（k token）', Num({ value: cfg.summaryCharsK === undefined ? 2 : cfg.summaryCharsK, onChange: function (e) { set('summaryCharsK', Math.max(1, Number(e.target.value) || 2)) } }), '会话工作的摘要/注入长度预算（k token，换算走内部语言表：中文约 1.5 字/token）。用于：①works 记录链总量预算（超了把最旧记录压缩为"指向+短摘要"）；②对话跟踪注入【本会话现有工作信息】的软字数限制（md 超链接不计入，可略超，输出上限兜底）'),
         Collapse({ title: '提示词注入', hint: '会话开始时加载记忆', defaultOpen: false },
           Row('启用提示词注入', Check({ checked: !!cfg.inject, onChange: function (e) { set('inject', e.target.checked) } }), '任何会话启动时自动加载当前活跃、关键词、重要信息记忆；取消则不注入'),
           Row('注入上限（字节）', Num({ value: cfg.injectLimitBytes || 4096, onChange: function (e) { set('injectLimitBytes', Number(e.target.value) || 4096) } }), '注入总览文本上限（字节），超出后从最早的记录开始截断'),
@@ -533,7 +533,18 @@ window.__ModuleLoader__.load({
         React.createElement('div', { style: adminWarning }, '⚠ 管理员模型留空 = 管理员功能全部关闭。\n模型下拉来自 DSH 配置（settings.yaml 的 agent-default-model + 可配置 provider 目录），仅显示已激活的 provider。'),
         Row('管理员模型', ModelSelect({ providers: providers, value: adm.model || '', onChange: function (v) { setA('model', v) } }), '指定模型后自动启用管理员功能；留空=管理员功能全部关闭'),
         Row('上下文 token 上限', KNum({ value: adm.contextTokens || 128000, onChange: function (v) { setA('contextTokens', v) } }), '管理员模型上下文长度上限（k token，如 128 = 128k）'),
-        Row('总结占用百分比（%）', Num({ value: adm.summaryPercent || 50, onChange: function (e) { setA('summaryPercent', Number(e.target.value) || 50) } }), '总结内容最多占用上下文的百分比（总结预算 ≈ ' + fmtK((adm.contextTokens || 128000) * ((adm.summaryPercent || 50) / 100)) + ' tokens）'),
+        Row('总结占用百分比（%）', Num({ value: adm.summaryPercent || 50, onChange: function (e) { setA('summaryPercent', Number(e.target.value) || 50) } }), '总结内容最多占用上下文的百分比（总结预算 ≈ ' + fmtK((adm.contextTokens || 128000) * ((adm.summaryPercent || 50) / 100)) + ' tokens）' + (function () {
+          // 低阈值警告：总结预算须覆盖「固定提示词开销 + 预期最小有效总结量」，否则可能无法正常工作
+          var ctx = Number(adm.contextTokens) || 128000
+          var pct = Number(adm.summaryPercent) || 50
+          var budget = ctx * pct / 100
+          var promptOverhead = 3.5  // adminPrompt + 输入结构固定开销（k token 粗估）
+          var minSummary = 0.8      // 预期最小有效总结量（k token）
+          if (budget / 1000 < promptOverhead + minSummary) {
+            return '\n⚠ 警告：当前预算仅 ' + Math.round(budget / 10) / 100 + 'k token，低于"固定提示词开销 + 最小有效总结量"（约 ' + (promptOverhead + minSummary) + 'k token），总结可能无法正常工作——建议提高百分比或上下文上限。'
+          }
+          return ''
+        })()),
         Row('并发（段裁剪并行）', Num({ value: adm.concurrency || 0, onChange: function (e) { setA('concurrency', Number(e.target.value) || 0) } }), '内容切块后同时发起多少个总结请求；0=串行（一块处理完再下一块），N=同时最多 N 块并行'),
         Row('输出上限（k token）', KNum({ value: adm.outputTokens || 1024, onChange: function (v) { setA('outputTokens', v) } }), '管理员模型单次输出的最大长度（k token）'),
         (function () {
