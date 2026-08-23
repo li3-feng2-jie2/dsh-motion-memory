@@ -1495,6 +1495,18 @@ export function apply(ctx) {
     }
     act.history = act.history.slice(-50)
   }
+  // 查询次数按天去重：times 数组（或 at）按日期去重后的天数——同 agent+会话+同日只算一次查询（计分防刷）
+  function queryDayCount(h) {
+    const days = new Set()
+    if (Array.isArray(h && h.times) && h.times.length) {
+      for (const t of h.times) { const s = String(t || '').slice(0, 10); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) days.add(s) }
+    }
+    if (!days.size) {
+      const s = String((h && h.at) || '').slice(0, 10)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) days.add(s)
+    }
+    return days.size || 1
+  }
   // 程序保证本会话工作段存在（不依赖模型 op=prepend）：works 无本会话 sid 段 → 自动创建空白段。
   // 空白段不写 history（未产生有效内容）；后续对话跟踪成功总结时更新内容并统一记一次更新；
   // 空白段保留（用户确认：无内容=走无模型整理，空白段保留并提醒，不删除）。
@@ -1512,6 +1524,62 @@ export function apply(ctx) {
       delete out.summary
       await writeJson(path, out)
       return { ok: true, created: true, path }
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) }
+    }
+  }
+  // works 段归档：被压缩/下沉删除前，把该段完整文本 + refs + 历史写入 补充/YYYY/MM/<sid>.json（同名追加）。
+  // 语义=「会话工作历史记录」，按年月时间分散存储（与懒归档一致）；查询记录按天合并。
+  async function archiveWorksSegment(sid, seg, meta) {
+    try {
+      const text = String((seg && seg.text) || '')
+      if (!text || !text.trim()) return { ok: false, error: '空段不归档' }
+      const d = new Date()
+      const dst = p(archiveDirFor(d), sanitizeFile(sid) + '.json')
+      const rep = await readJson(dst)
+      const me = { agent: (meta && (meta.agent || meta.session)) || 'memory-admin', session: sid, turn: (meta && meta.turn) || 0 }
+      const entry = {
+        kind: 'works-history',
+        title: '会话工作历史：' + sid,
+        reason: 'works 段压缩/下沉归档（按年月分散存储）',
+        at: nowIso(),
+        content: text,
+        refs: Array.isArray(seg && seg.refs) ? seg.refs : [],
+        updatedAt: (seg && seg.updatedAt) || nowIso(),
+        archivedBy: me,
+        source: 'active-works',
+      }
+      if (rep && !isTombstone(rep)) {
+        // 同名文件存在：按天合并——同一天归档追加到当天条目，跨天新增条目
+        rep.entries = Array.isArray(rep.entries) ? rep.entries : []
+        const dayKey = entry.at.slice(0, 10)
+        const sameDay = rep.entries.findIndex(e2 => e2 && e2.kind === 'works-history' && String(e2.at || '').slice(0, 10) === dayKey)
+        if (sameDay >= 0) {
+          const prev = rep.entries[sameDay]
+          prev.content = prev.content + '\n---\n' + entry.content
+          prev.refs = (prev.refs || []).concat(entry.refs)
+          prev.updatedAt = entry.updatedAt
+          rep.entries[sameDay] = prev
+        } else {
+          rep.entries.push(entry)
+        }
+        rep.history = rep.history || []
+        rep.history.push(histEntry('move', { ...me, note: 'works 段归档追加：' + sid, fromPath: 'active-works', toPath: relOf(dst), keep: false }))
+        rep.updatedAt = nowIso()
+        await writeJson(dst, rep)
+      } else {
+        await writeJson(dst, {
+          schemaVersion: 1, id: uid(), kind: 'works-history', location: 'archive',
+          title: '会话工作历史：' + sid,
+          reason: 'works 段压缩/下沉归档',
+          entries: [entry],
+          links: { parents: [], children: [] },
+          createdAt: nowIso(), updatedAt: nowIso(), lastAccessedAt: nowIso(),
+          createdBy: me, lastModifiedBy: me, originalId: null,
+          history: [histEntry('move', { ...me, note: 'works 段归档创建：' + sid, fromPath: 'active-works', toPath: relOf(dst), keep: false })],
+        })
+      }
+      return { ok: true, path: relOf(dst) }
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) }
     }
@@ -1678,12 +1746,14 @@ export function apply(ctx) {
             total = total - full.length + cut.length
             r.text = cut
           } else {
-            // 压缩后仍不短（如纯链接）：移除该条（指向已并入其它记录或可经历史找回）
+            // 压缩后仍不短（如纯链接）：归档该条后移除（指向已并入其它记录；完整文本进补充同名文件）
             total -= full.length
+            archiveWorksSegment(r.sid || sid, { text: full, refs: r.refs, updatedAt: r.updatedAt || r.at }, { agent: ownerKey || sid, session: sid, turn }).catch(() => {})
             act.records.splice(i, 1)
           }
         } else {
           total -= full.length
+          archiveWorksSegment(r.sid || sid, { text: full, refs: r.refs, updatedAt: r.updatedAt || r.at }, { agent: ownerKey || sid, session: sid, turn }).catch(() => {})
           act.records.splice(i, 1)
         }
       }
@@ -2330,16 +2400,17 @@ export function apply(ctx) {
       if (!found) return { ok: false, text: '重要记忆中未找到标题：' + args.open + '（可先 keyword 搜索，或开启 queryOtherAgents 扩大范围）' }
       found.obj.lastAccessedAt = nowIso()
       found.obj.history = found.obj.history || []
-      // 防重（v5）：同 agent + 同会话 的重复阅读不新增记录，只追加时间到 times 数组
-      // （评分按 times 长度计一次；跨会话/跨 agent 阅读才新增记录）
-      const sameCtx = found.obj.history.filter(h => h.op === 'query' && h.session === meta.session && (meta.agent ? h.agent === meta.agent : true))
+      // 防重（v5.1）：同 agent + 同会话 + 同一天 的重复阅读不新增记录，只追加时间到 times 数组
+      // （评分按 times 按天去重计一次；跨天/跨会话/跨 agent 阅读才新增记录）
+      const nowI = nowIso()
+      const sameCtx = found.obj.history.filter(h => h.op === 'query' && h.session === meta.session && (meta.agent ? h.agent === meta.agent : true) && String(h.at || '').slice(0, 10) === nowI.slice(0, 10))
       if (sameCtx.length) {
         const rec = sameCtx[sameCtx.length - 1]
         rec.times = Array.isArray(rec.times) ? rec.times : (rec.at ? [rec.at] : [])
-        rec.times.push(nowIso())
+        rec.times.push(nowI)
       } else {
         const entry = histEntry('query', { ...meta, note: '回忆查询：' + args.open })
-        entry.times = [nowIso()]
+        entry.times = [nowI]
         found.obj.history.push(entry)
       }
       found.obj.history = found.obj.history.slice(-50)  // 防膨胀：与 update/界面保存对齐
@@ -2658,10 +2729,13 @@ export function apply(ctx) {
           if (!h || h.keep === false) continue
           h.keep = false
           const oldVersion = reconstructAt(obj, parseIso(h.at), parseIso)
+          // 归档时带上该记忆的查询记录（按天合并，计分防刷语义一致）
+          const queryRecords = (obj.history || []).filter(qh => qh.op === 'query' && qh !== h).map(qh => ({ at: qh.at, session: qh.session, agent: qh.agent, times: Array.isArray(qh.times) ? qh.times : (qh.at ? [qh.at] : []) }))
           const dst = p(archiveDirFor(new Date(h.at)), sanitizeFile(obj.title) + '.json')
           const rep = (await readJson(dst))
           if (rep && !isTombstone(rep)) {
             rep.content = rep.content ? rep.content + '\n---\n' + oldVersion : oldVersion
+            rep.queryRecords = (Array.isArray(rep.queryRecords) ? rep.queryRecords : []).concat(queryRecords)
             rep.history.push(histEntry('forget-update', { note: '遗忘更新：原意图不再保留（合并入 ' + obj.title + '）', keep: false }))
             rep.updatedAt = nowIso()
             await writeJson(dst, rep)
@@ -2669,6 +2743,7 @@ export function apply(ctx) {
             await writeJson(dst, {
               schemaVersion: 1, id: uid(), kind: 'keyword', location: 'archive', title: obj.title,
               reason: '遗忘更新：' + (h.note || '原意图不再保留'), content: oldVersion,
+              queryRecords,
               links: { parents: [{ kind: 'keyword', location: obj.location, title: obj.title }], children: [] },
               createdAt: h.at, updatedAt: nowIso(), lastAccessedAt: nowIso(),
               createdBy: { agent: h.agent, session: h.session, turn: h.turn }, lastModifiedBy: { agent: meta.agent, session: meta.session, turn: meta.turn },
@@ -4490,7 +4565,7 @@ function parseAdminJson(text) {
           for (const hh of f.obj.history) {
             const op = hh && hh.op
             if (op === 'create') score += 3
-            else if (op === 'query') score += Array.isArray(hh.times) && hh.times.length ? hh.times.length : 1
+            else if (op === 'query') score += queryDayCount(hh)
             else if (op === 'update') score += 2
             else if (op === 'forget' || op === 'restore') score += 1
           }
@@ -4965,7 +5040,7 @@ function parseAdminJson(text) {
       let create = 0, query = 0, update = 0, forget = 0, restore = 0
       for (const h of (e.obj.history || [])) {
         if (h.op === 'create') create++
-        else if (h.op === 'query') query += Array.isArray(h.times) && h.times.length ? h.times.length : 1
+        else if (h.op === 'query') query += queryDayCount(h)
         else if (h.op === 'update') update++
         else if (h.op === 'forget-update') forget++
         else if (h.op === 'restore') restore++
@@ -5014,7 +5089,7 @@ function parseAdminJson(text) {
     const created = parseIso(obj.createdAt) || nowMs
     const days = Math.max(0, (nowMs - created) / 86400000)
     const timeFactor = Math.max(0.2, 1 - days * 0.8 / 30) // 30 天线性降到 20%
-    const accessed = (obj.history || []).filter(h => h.op === 'query').reduce((n, h) => n + (Array.isArray(h.times) && h.times.length ? h.times.length : 1), 0)
+    const accessed = (obj.history || []).filter(h => h.op === 'query').reduce((n, h) => n + queryDayCount(h), 0)
     return accessed * 2 * timeFactor + timeFactor
   }
   // 找到最近 auto 周期文件（跳过 manual），返回 {path, obj} 或 null
