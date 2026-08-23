@@ -811,6 +811,23 @@ function MemoryView(props) {
   var kwSearch = React.useState('')
   var kwSearchV = kwSearch[0]
   var setKwSearch = kwSearch[1]
+  // 关键词页：含归档查询（勾选后走补充区时间范围查询）+ 展开折叠（标题/摘要→全文）
+  var kwArch = React.useState(false)
+  var kwArchV = kwArch[0]
+  var setKwArch = kwArch[1]
+  var kwFrom = React.useState('')
+  var kwFromV = kwFrom[0]
+  var setKwFrom = kwFrom[1]
+  var kwTo = React.useState('')
+  var kwToV = kwTo[0]
+  var setKwTo = kwTo[1]
+  var kwArchMeta = React.useState(null) // {oldest, newest} 归档时间范围
+  var kwArchMetaV = kwArchMeta[0]
+  var setKwArchMeta = kwArchMeta[1]
+  var expandedMap = React.useState({}) // path -> true（通用展开状态：关键词/周期内容折叠）
+  var expandedV = expandedMap[0]
+  var setExpanded = expandedMap[1]
+  function toggleExpanded(path) { setExpanded(function (prev) { var m = Object.assign({}, prev || {}); if (m[path]) delete m[path]; else m[path] = true; return m }) }
   var popup = React.useState([])
   var popupV = popup[0]
   var setPopup = popup[1]
@@ -910,7 +927,18 @@ function MemoryView(props) {
         }
       })
     }
-    if (t === 'kws') p = callHost('mm-keyword-list', {}).then(function (r) { setKws((r && r.items) || []) })
+    if (t === 'kws') {
+      if (kwArchV) {
+        var fA = kwFromV ? new Date(kwFromV + 'T00:00:00').getTime() : 0
+        var tA = kwToV ? new Date(kwToV + 'T23:59:59').getTime() : 0
+        p = callHost('mm-keyword-archive', { from: fA, to: tA }).then(function (r) {
+          setKws((r && r.items) || [])
+          setKwArchMeta({ oldest: (r && r.oldestArchiveAt) || 0, newest: (r && r.newestArchiveAt) || 0 })
+        })
+      } else {
+        p = callHost('mm-keyword-list', {}).then(function (r) { setKws((r && r.items) || []); setKwArchMeta(null) })
+      }
+    }
     if (t === 'active') p = callHost('mm-active-read', { session: sessionId || '' }).then(function (r) { setActive((r && r.data) || null) })
     if (t === 'periods') p = callHost('period-history', { from: fMs || 0, to: tMs || 0 }).then(function (r) { setPeriods((r && r.items) || []) })
     p.catch(function (e) { setMsg('加载失败: ' + String((e && e.message) || e)) }).finally(function () { setBusy(false) })
@@ -1212,10 +1240,12 @@ function MemoryView(props) {
                 ),
               )
       }
-      // 正常态：判断该区间是否在跟踪设定内（track 启用且区间起点 >= 该会话记录的起始轮次）
+      // 正常态：判断该区间是否在跟踪设定内（track 启用 且 该会话已有跟踪基准 且 区间起点 >= 基准起始轮次）
       // trackOn/curMeta 已由 renderTurns 顶层计算（同一函数作用域）
-      var trackStart = curMeta ? (Number(curMeta.startTurn) || 0) : 0
-      var inTrack = trackOn && g.start >= trackStart
+      // curMeta（trackMeta 最后一条）不存在 = 该会话从未建立跟踪基准（还没总结过）→ 一律"未设置轮次总结"，
+      // 避免"启用跟踪后所有缺失轮次（含启用前的老轮次）都被标成跟踪设定内未总结"
+      var trackStart = curMeta ? (Number(curMeta.startTurn) || 0) : -1
+      var inTrack = !!curMeta && trackOn && g.start >= trackStart
       var statusText = inTrack
         ? '跟踪设定内未总结'
         : '未设置轮次总结'
@@ -1317,8 +1347,43 @@ function MemoryView(props) {
         ),
       )
   }
-  // 关键词页：首行搜索 + 新增（标题+内容）+ 列表编辑/删除；按分数排序（host 已算 score）
+  // 关键词页：首行搜索 + 新增（标题+内容）+ 列表编辑/移补充/加回；按分数排序（host 已算 score）
+  // 含归档（补充区）时间范围查询：默认最新归档前 30 天起到现在；内容折叠点击展开
+  function onKwArchChange(on) {
+    setKwArch(on)
+    if (on) {
+      setBusy(true)
+      callHost('mm-keyword-archive', { from: 0, to: 0 }).then(function (r) {
+        var meta = { oldest: (r && r.oldestArchiveAt) || 0, newest: (r && r.newestArchiveAt) || 0 }
+        setKwArchMeta(meta)
+        setKws((r && r.items) || [])
+        // 默认时间范围：最新归档时间 - 30 天 起，到现在（30 天为界面默认窗口）
+        if (meta.newest) {
+          var d = new Date(meta.newest - 30 * 86400000)
+          setKwFrom(d.toISOString().slice(0, 10))
+        }
+        setKwTo('')
+      }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
+    } else {
+      setKwArchMeta(null)
+      setKwFrom(''); setKwTo('')
+      refreshTab('kws', true)
+    }
+  }
   function renderKws() {
+    var archRow = React.createElement('div', { key: '__arch', style: Object.assign({}, mmItem, { alignItems: 'center', flexWrap: 'wrap' }) },
+      React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+        Check({ checked: kwArchV, onChange: function (e) { onKwArchChange(e.target.checked) } }),
+        React.createElement('span', {}, '含归档（补充区）'),
+      ),
+      React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '从'),
+      React.createElement('input', { type: 'date', style: inputStyle, value: kwFromV, onChange: function (e) { setKwFrom(e.target.value); setKws(null) } }),
+      React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '到'),
+      React.createElement('input', { type: 'date', style: inputStyle, value: kwToV, onChange: function (e) { setKwTo(e.target.value); setKws(null) } }),
+      React.createElement('button', { style: mmBtn, onClick: function () { setKwFrom(''); setKwTo(''); setKws(null); refreshTab('kws', true) } }, '全部'),
+      React.createElement('button', { style: mmBtn, onClick: function () { setKws(null); refreshTab('kws', true) } }, '搜索'),
+      (kwArchV && kwArchMetaV && kwArchMetaV.newest) ? React.createElement('span', { key: '__hint', style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '默认窗口：最新归档 ' + new Date(kwArchMetaV.newest).toISOString().slice(0, 10) + ' 前 30 天 起 · 最旧归档 ' + (kwArchMetaV.oldest ? new Date(kwArchMetaV.oldest).toISOString().slice(0, 10) : '?') + '（"全部"可查全部归档）') : null,
+    )
     var searchRow = React.createElement('div', { key: '__search', style: Object.assign({}, mmItem, { alignItems: 'center' }) },
       React.createElement('div', { style: { width: 130, flexShrink: 0, fontWeight: 600 } }, '搜索关键词'),
       React.createElement('input', { style: Object.assign({}, mmArea, { minHeight: 24, flex: 1 }), placeholder: '输入文本，空格分隔多词（按分数排序）', value: kwSearchV, onChange: function (e) { setKwSearch(e.target.value) } }),
@@ -1336,7 +1401,7 @@ function MemoryView(props) {
         }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
       } }, '+ 新增')
     )
-    if (!kwsV) return React.createElement('div', { style: mmEmpty }, busyV ? '加载中…' : [searchRow, addRow])
+    if (!kwsV) return React.createElement('div', { style: mmEmpty }, busyV ? '加载中…' : [archRow, searchRow, addRow])
     // 多词过滤：每个词都需命中 标题 或 内容（host 已按分数降序）
     var terms = kwSearchV.trim().split(/\s+/).filter(Boolean)
     var list = kwsV
@@ -1347,28 +1412,48 @@ function MemoryView(props) {
         return true
       })
     }
-    var rows = [searchRow, addRow].concat(list.map(function (it) {
+    var rows = [archRow, searchRow, addRow].concat(list.map(function (it) {
       var isEditing = editState && editState.path === it.path
+      var isOpen = !!expandedV[it.path]
+      var zoneTag = it.zone === 'period' ? '（周期）' : it.zone === 'archive' ? '（归档）' : ''
+      var linkTitles = []
+      if (it.links) {
+        var allL = (it.links.children || []).concat(it.links.parents || [])
+        for (var li = 0; li < allL.length; li++) { if (allL[li] && allL[li].title && linkTitles.indexOf(allL[li].title) < 0) linkTitles.push(allL[li].title) }
+      }
+      var fullContent = String(it.content || '')
+      var preview = fullContent.slice(0, 80)
       return React.createElement('div', { key: it.path, style: mmItem },
-        React.createElement('div', { style: { width: 130, flexShrink: 0, fontWeight: 600, wordBreak: 'break-all' } },
-          it.title,
-          (typeof it.score === 'number') ? React.createElement('div', { style: { fontSize: 10, color: 'var(--dsw-alias-label-secondary)', fontWeight: 400, marginTop: 2 } }, '得分 ' + it.score) : null,
+        React.createElement('div', { style: { width: 150, flexShrink: 0, fontWeight: 600, wordBreak: 'break-all', cursor: 'pointer' }, onClick: function () { toggleExpanded(it.path) } },
+          it.title + zoneTag,
+          (typeof it.score === 'number') ? React.createElement('div', { style: { fontSize: 10, color: 'var(--dsw-alias-label-secondary)', fontWeight: 400, marginTop: 2 } }, '得分 ' + (it.score > 0 ? it.score.toFixed(1) : it.score)) : null,
         ),
         !isEditing
-          ? React.createElement('div', { style: { flex: 1, minWidth: 200, whiteSpace: 'pre-wrap' } }, mdText(it.content))
+          ? React.createElement('div', { style: { flex: 1, minWidth: 200, whiteSpace: 'pre-wrap', cursor: 'pointer' }, onClick: function () { toggleExpanded(it.path) } },
+              isOpen ? mdText(fullContent) : (preview + (fullContent.length > preview.length ? ' …（点击展开）' : '')),
+              isOpen && linkTitles.length ? React.createElement('div', { key: '__links', style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, '关联（指向它/它指向）：' + linkTitles.join('；')) : null,
+            )
           : autoTextArea(editState.value || '', function (e) { setEditState({ path: it.path, value: e.target.value }) }, null, null, function () {
               setBusy(true)
               callHost('mm-keyword-save', { title: it.title, content: editState.value }).then(function (r) { setMsg((r && r.text) || '已保存'); setEditState(null); refreshTab('kws', true) }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
             }),
-        React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center' } },
+        React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
           !isEditing
-            ? React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center' } },
-                React.createElement('button', { style: mmBtn, onClick: function () { setEditState({ path: it.path, value: it.content || '' }) } }, '修改'),
-                React.createElement('button', { style: Object.assign({}, mmBtn, { color: 'var(--dsw-alias-state-error-primary)' }), onClick: function () {
-                  if (!window.confirm('确认删除关键词记忆：' + it.title + '？')) return
-                  setBusy(true)
-                  callHost('mm-keyword-del', { title: it.title }).then(function (r) { setMsg((r && r.text) || '已删除'); refreshTab('kws', true) }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
-                } }, '删除')
+            ? React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
+                it.zone === 'archive'
+                  ? React.createElement('button', { style: mmBtn, onClick: function () {
+                      if (!window.confirm('确认加回关键词记忆：' + it.title + '？（补充区 → 重要区）')) return
+                      setBusy(true)
+                      callHost('mm-keyword-restore', { title: it.title }).then(function (r) { setMsg((r && r.text) || '已加回'); refreshTab('kws', true) }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
+                    } }, '加回')
+                  : React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center' } },
+                      React.createElement('button', { style: mmBtn, onClick: function () { setEditState({ path: it.path, value: it.content || '' }) } }, '修改'),
+                      React.createElement('button', { style: Object.assign({}, mmBtn, { color: 'var(--dsw-alias-state-error-primary)' }), onClick: function () {
+                        if (!window.confirm('确认移补充关键词记忆：' + it.title + '？（重要区 → 补充区归档，可随时加回）')) return
+                        setBusy(true)
+                        callHost('mm-keyword-del', { title: it.title }).then(function (r) { setMsg((r && r.text) || '已移补充'); refreshTab('kws', true) }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
+                      } }, '移补充'),
+                    ),
               )
             : React.createElement('div', { style: { display: 'flex', gap: 4 } },
                 React.createElement('button', { style: mmBtn, onClick: function () { setBusy(true); callHost('mm-keyword-save', { title: it.title, content: editState.value }).then(function (r) { setMsg((r && r.text) || '已保存'); setEditState(null); refreshTab('kws', true) }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) }) } }, '保存'),
@@ -1486,8 +1571,11 @@ function MemoryView(props) {
                       React.createElement('button', { style: mmBtn, onClick: function () { setEditState(null) } }, '取消'),
                     ),
                   )
-                : React.createElement('div', { style: { flex: 1, minWidth: 200, whiteSpace: 'pre-wrap' } },
-                    mdText(it.content),
+                : React.createElement('div', { style: { flex: 1, minWidth: 200, whiteSpace: 'pre-wrap', cursor: 'pointer' }, onClick: function () { toggleExpanded(it.path) } },
+                    (function () {
+                      var fc = String(it.content || '')
+                      return !!expandedV[it.path] ? mdText(fc) : (fc.slice(0, 120) + (fc.length > 120 ? ' …（点击展开）' : ''))
+                    })(),
                     React.createElement('div', { style: btnRow },
                       React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', marginRight: 'auto' } }, it.scopeLabel || ('方案' + (it.scope || 1))),
                       React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
@@ -1620,6 +1708,7 @@ function MemoryView(props) {
       React.createElement('span', {}, '含归档'),
     ) : null,
     React.createElement('button', { style: mmBtn, onClick: function () { setTurns(null); setSessions(null); setPeriods(null); refreshTab(tabV, true) } }, '搜索'),
+    React.createElement('button', { style: mmBtn, onClick: function () { setTimeFrom(''); setTimeTo(''); setSearchArch(false); setTurns(null); setSessions(null); setPeriods(null); refreshTab(tabV, true) } }, '全部'),
     React.createElement('button', { style: Object.assign({}, mmBtn, { marginLeft: 'auto' }), onClick: function () { setTimeFrom(''); setTimeTo(''); setSearchArch(false); setTurns(null); setSessions(null); setPeriods(null) } }, '清空'),
   ) : null
   var rendered

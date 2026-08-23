@@ -1107,6 +1107,7 @@ export function apply(ctx) {
         const c = await readCfg()
         const r = rootOf(c)
         const out = []
+        // ① 重要文件夹（关键词 + 多词限定标题，一律以关键词方式处理）
         for (const f of await listFiles(p(r, '记忆累积', '重要'), false)) {
           const o = await readJson(f.path)
           if (!o || o.tombstone) continue
@@ -1128,9 +1129,22 @@ export function apply(ctx) {
             const floor = Math.max(0.1, Number(c && c.indexScore && c.indexScore.floor) || 0.2)
             score = score * Math.max(floor, 1 - ageDays / scDecay)
           }
-          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score })
+          const links = (o.links && (Array.isArray(o.links.children) || Array.isArray(o.links.parents)))
+            ? { children: Array.isArray(o.links.children) ? o.links.children : [], parents: Array.isArray(o.links.parents) ? o.links.parents : [] }
+            : { children: [], parents: [] }
+          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score, zone: 'important', links })
         }
-        // 按分数降序，同级按更新时间降序
+        // ② 周期总结（近 decayDays 天）一并载入
+        const decay = Math.max(1, Number(c && c.decayDays) || 30)
+        const cutoff = Date.now() - decay * 86400000
+        for (const f of await listFiles(p(r, '记忆累积', '周期记忆'), true)) {
+          const o = await readJson(f.path)
+          if (!o || o.tombstone || o.kind !== 'period') continue
+          const at = parseIso(o.createdAt) || parseIso(o.updatedAt) || 0
+          if (at && at < cutoff) continue
+          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score: 0, zone: 'period', links: { children: [], parents: [] } })
+        }
+        // 按分数降序，同级按更新时间降序（周期 score=0 排在末尾）
         out.sort((a, b) => (b.score - a.score) || (b.updatedAt || '').localeCompare(a.updatedAt || ''))
         return { ok: true, items: out }
       }
@@ -1197,6 +1211,62 @@ export function apply(ctx) {
         // 原位置留 tombstone
         await writeJson(src, { tombstone: true, movedTo: relOf(dst, r), at: nowIso() })
         return { ok: true, text: '已删除关键词记忆：' + title + '（归档到补充区）' }
+      }
+      case 'mm-keyword-restore': {
+        // 加回：补充区 → 重要区（重要区已有同名则内容追加合并；原位置留 tombstone）
+        const c = await readCfg()
+        const r = rootOf(c)
+        const title = String((payload && payload.title) || '').trim()
+        if (!title) return { ok: false, text: '缺少标题' }
+        const safe = String(title).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 80) + '.json'
+        let src = null
+        for (const f of await listFiles(p(r, '记忆累积', '补充'), true)) {
+          if (f.name !== safe) continue
+          const o = await readJson(f.path)
+          if (o && !o.tombstone) { src = { path: f.path, obj: o }; break }
+        }
+        if (!src) return { ok: false, text: '补充区未找到：' + title }
+        const dst = p(r, '记忆累积', '重要', safe)
+        const existing = await readJson(dst)
+        if (existing && !existing.tombstone) {
+          existing.content = (existing.content ? existing.content + '\n' : '') + String(src.obj.content || '')
+          existing.links = existing.links || { parents: [], children: [] }
+          existing.links.children = (existing.links.children || []).concat({ kind: 'keyword', location: 'archive', title })
+          existing.history = existing.history || []
+          existing.history.push({ op: 'restore', agent: 'user+memory-admin', session: '', turn: 0, at: nowIso(), note: '界面加回（合并同名）', keep: true })
+          existing.updatedAt = nowIso()
+          await writeJson(dst, existing)
+        } else {
+          src.obj.location = 'important'
+          src.obj.history = src.obj.history || []
+          src.obj.history.push({ op: 'restore', agent: 'user+memory-admin', session: '', turn: 0, at: nowIso(), note: '界面加回', keep: true })
+          src.obj.updatedAt = nowIso()
+          await writeJson(dst, src.obj)
+        }
+        await writeJson(src.path, { tombstone: true, movedTo: relOf(dst, r), at: nowIso() })
+        return { ok: true, text: '已加回关键词记忆：' + title }
+      }
+      case 'mm-keyword-archive': {
+        // 补充区（归档）关键词查询：按归档时间范围过滤（from/to 毫秒时间戳，0=不限）
+        // 返回最旧/最新归档时间，供界面默认时间范围（最新归档 - N 天 起）
+        const c = await readCfg()
+        const r = rootOf(c)
+        const fromMs = Number((payload && payload.from) || 0)
+        const toMs = Number((payload && payload.to) || 0)
+        const out = []
+        let oldest = 0, newest = 0
+        for (const f of await listFiles(p(r, '记忆累积', '补充'), true)) {
+          const o = await readJson(f.path)
+          if (!o || o.tombstone) continue
+          const at = parseIso(o.updatedAt) || parseIso(o.createdAt) || 0
+          if (fromMs && at < fromMs) continue
+          if (toMs && at > toMs) continue
+          if (!oldest || (at && at < oldest)) oldest = at
+          if (at > newest) newest = at
+          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', at, zone: 'archive', links: { children: [], parents: [] } })
+        }
+        out.sort((a, b) => (b.at || 0) - (a.at || 0))
+        return { ok: true, items: out, oldestArchiveAt: oldest, newestArchiveAt: newest }
       }
       case 'mm-active-save': {
         // 修改当前智能体活跃记忆（v4：custom/keywords/works；直调 motionMemoryApi）

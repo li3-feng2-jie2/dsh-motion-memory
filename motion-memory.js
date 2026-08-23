@@ -3853,7 +3853,9 @@ function parseAdminJson(text) {
     obj.trackMeta = Array.isArray(obj.trackMeta) ? obj.trackMeta : []
     const last = obj.trackMeta.length ? obj.trackMeta[obj.trackMeta.length - 1] : null
     const interval = Math.max(0, Number(tc.interval) || 0)
-    const startTurn = Math.max(0, Number(tc.startTurn) || 0)
+    // 起始轮次语义：该跟踪段从哪一轮开始生效——显式配置的 startTurn 优先，否则用触发轮次。
+    // （以前默认 0 会导致"启用跟踪前的老轮次也被算进跟踪设定内"，轮次页显示失真）
+    const startTurn = Math.max(0, Number(tc.startTurn) || 0, turn)
     if (!last || last.interval !== interval || last.startTurn !== startTurn) {
       obj.trackMeta.push({ startTurn, interval, at: nowIso(), turn })
       if (obj.trackMeta.length > 20) obj.trackMeta = obj.trackMeta.slice(-20)
