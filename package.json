@@ -1,0 +1,26 @@
+{
+  "name": "dsh-motion-memory",
+  "version": "0.1.0",
+  "description": "运动记忆 Motion Memory — DeepSeek Harness 本地记忆管理插件：对话跟踪 + 周期总结，会话沉淀为可溯源的本地记忆文档。",
+  "type": "module",
+  "main": "motion-memory.js",
+  "files": [
+    "motion-memory.js",
+    "mm-settings",
+    "motion-memory-modules",
+    "cordis.patch.yml",
+    "README.md",
+    "SETTINGS.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/li3-feng2-jie2/dsh-motion-memory"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
