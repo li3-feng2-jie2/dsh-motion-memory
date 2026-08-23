@@ -5583,6 +5583,8 @@ function parseAdminJson(text) {
   // ── 版本与更新（v0.1.x：git 绑定安装的自动更新检查）────────────────────
   // 发布版为 git 仓库（motion-memory-dist 工作副本），用 git fetch 对比远端，
   // 有更新可执行 git pull（重启 DSH 生效）；手动复制安装则提示重新下载。
+  // 自动检查：启动后 8 秒检查一次，之后每 12 小时一次（结果缓存，设置页/命令可查）。
+  const UPDATE_PROJECT_URL = 'https://github.com/li3-feng2-jie2/dsh-motion-memory'
   // 定位插件文件所在目录（import.meta.url → 向上找 .git）
   function pluginGitDir() {
     try {
@@ -5616,7 +5618,7 @@ function parseAdminJson(text) {
   }
   async function pluginVersionInfo() {
     const dir = pluginGitDir()
-    if (!dir) return { git: false, version: '0.1.0' }
+    if (!dir) return { git: false, version: '0.1.0', projectUrl: UPDATE_PROJECT_URL }
     const tag = await execGit(['describe', '--tags', '--always'], { cwd: dir })
     const head = await execGit(['rev-parse', '--short', 'HEAD'], { cwd: dir })
     const remote = await execGit(['remote', 'get-url', 'origin'], { cwd: dir })
@@ -5625,23 +5627,25 @@ function parseAdminJson(text) {
       git: true, dir, version: (pkg && pkg.version) || '0.1.0',
       tag: tag.ok ? tag.out : '', head: head.ok ? head.out : '',
       remote: remote.ok ? remote.out : '',
+      projectUrl: (pkg && pkg.repository && pkg.repository.url) ? String(pkg.repository.url).replace(/^git\+/, '').replace(/\.git$/, '') : UPDATE_PROJECT_URL,
     }
   }
   // 检查更新（git fetch + 对比落后提交数）
   async function checkUpdate() {
     const dir = pluginGitDir()
-    if (!dir) return { ok: false, text: '未检测到 git 安装目录（手动复制安装无法自动更新，请从发布仓库重新下载）', info: null }
+    if (!dir) return { ok: false, text: '未检测到 git 安装目录（手动复制安装无法自动更新，请从发布仓库重新下载）：' + UPDATE_PROJECT_URL, info: null, projectUrl: UPDATE_PROJECT_URL }
     const info = await pluginVersionInfo()
     const fet = await execGit(['fetch', 'origin'], { cwd: dir, timeout: 30000 })
-    if (!fet.ok) return { ok: false, text: '检查更新失败：' + fet.error + '（请确认 git 与网络可用）', info }
+    if (!fet.ok) return { ok: false, text: '检查更新失败：' + fet.error + '（请确认 git 与网络可用）\n项目地址：' + info.projectUrl, info, projectUrl: info.projectUrl }
     const behind = await execGit(['rev-list', '--count', 'HEAD..@{u}'], { cwd: dir })
     const latest = await execGit(['log', '-1', '--format=%h %s', '@{u}'], { cwd: dir })
     const behindN = behind.ok ? (Number(behind.out) || 0) : 0
     return {
       ok: true, hasUpdate: behindN > 0, behind: behindN,
       info: Object.assign({}, info, { latest: latest.ok ? latest.out : '' }),
+      projectUrl: info.projectUrl,
       text: '版本 v' + info.version + (info.tag ? '（' + info.tag + '）' : '') + ' · 提交 ' + info.head +
-        (behindN > 0 ? '\n发现新版本（落后 ' + behindN + ' 个提交，最新：' + (latest.ok ? latest.out : '?') + '）\n执行 memory cmd=update action=apply 更新（更新后需重启 DSH 生效）' : '\n已是最新版本'),
+        (behindN > 0 ? '\n发现新版本（落后 ' + behindN + ' 个提交，最新：' + (latest.ok ? latest.out : '?') + '）\n点击"更新"拉取（更新后需重启 DSH 生效）' : '\n已是最新版本'),
     }
   }
   // 执行更新（git pull --ff-only，更新文件后需重启生效）
@@ -5659,6 +5663,31 @@ function parseAdminJson(text) {
     if (action === 'apply') return applyUpdate()
     return checkUpdate()
   }
+  // 自动更新检查：结果缓存到 state.lastUpdateCheck（设置页/命令可读，避免频繁 fetch）
+  async function autoUpdateCheck() {
+    const r = await checkUpdate().catch(() => ({ ok: false, text: '更新检查失败' }))
+    state.lastUpdateCheck = Object.assign({ at: nowIso() }, r)
+    if (r && r.ok && r.hasUpdate) console.log('[motion-memory] 检测到新版本（落后 ' + r.behind + ' 个提交），可在设置页"版本与更新"执行更新')
+    return state.lastUpdateCheck
+  }
+  // 启动后 8 秒检查一次，之后每 12 小时一次（生命周期自动清理）
+  let autoTimerId = null
+  function startAutoUpdateCheck() {
+    try {
+      const bootTimer = setTimeout(() => {
+        autoUpdateCheck().catch(() => {})
+        scheduleLoop()
+      }, 8000)
+      function scheduleLoop() {
+        autoTimerId = setTimeout(() => { autoUpdateCheck().catch(() => {}); scheduleLoop() }, 12 * 3600 * 1000)
+      }
+      const disposer = () => {
+        try { if (bootTimer) clearTimeout(bootTimer) } catch (e) {}
+        try { if (autoTimerId) clearTimeout(autoTimerId) } catch (e) {}
+      }
+      try { if (ctx && typeof ctx.effect === 'function') ctx.effect(disposer) } catch (e) {}
+    } catch (e) {}
+  }
 
   // ═════════════════════════════════════════════════════════════════════
   // 配置界面 RPC（host 半，供 settings.section client 页面调用）
@@ -5668,10 +5697,12 @@ function parseAdminJson(text) {
   const harnessApi = ctx.get('harness')
   if (harnessApi) {
     // 读完整配置（含 admin 全部字段，未配置时给默认值）
-    // 版本与更新（界面按钮：检查 / 执行更新）
-    harnessApi.handle('motion-memory/update-check', async () => {
+    // 版本与更新（界面按钮：检查 / 执行更新）；check 优先返回自动检查缓存，force=true 强制重新 fetch
+    harnessApi.handle('motion-memory/update-check', async (args) => {
       await ready().catch(() => {})
-      return checkUpdate()
+      const force = !!(args && args.force)
+      if (!force && state.lastUpdateCheck) return state.lastUpdateCheck
+      return autoUpdateCheck()
     })
     harnessApi.handle('motion-memory/update', async () => {
       await ready().catch(() => {})
@@ -6194,9 +6225,11 @@ function parseAdminJson(text) {
   // 不走"写请求文件 → 定时器 → 轮询结果文件"的文件接力链路。
   ctx.provide('motionMemoryApi', {
     // 版本检查 / 执行更新（git 绑定安装；供 mm-settings 界面按钮调用）
-    async updateCheck() {
+    async updateCheck(args) {
       await ready().catch(() => {})
-      return checkUpdate()
+      const force = !!(args && args.force)
+      if (!force && state.lastUpdateCheck) return state.lastUpdateCheck
+      return autoUpdateCheck()
     },
     async updateApply() {
       await ready().catch(() => {})
@@ -6312,4 +6345,6 @@ function parseAdminJson(text) {
   ready()
   // 启动后后台执行一次散事件文件合并（并入会话聚合文件；幂等，失败不阻塞）
   Promise.resolve().then(() => { ready().then(() => mergeScatteredTurnEvents()).catch(() => {}) })
+  // 自动更新检查：启动后 8 秒检查一次，之后每 12 小时一次（结果缓存，失败静默）
+  startAutoUpdateCheck()
 }

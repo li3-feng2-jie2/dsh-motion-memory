@@ -1352,7 +1352,7 @@ export function apply(ctx) {
       case 'mm-update-check': {
         const api = ctx.get('motionMemoryApi')
         if (!api || typeof api.updateCheck !== 'function') return { ok: false, text: 'motionMemoryApi 服务不可用' }
-        return api.updateCheck()
+        return api.updateCheck({ force: !!(payload && payload.force) })
       }
       case 'mm-update': {
         const api = ctx.get('motionMemoryApi')
