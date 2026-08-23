@@ -1469,6 +1469,51 @@ export function apply(ctx) {
     if (/\]\([^)]*@\d+/.test(t)) return t
     return '[会话工作更新](' + sid + '@' + Number(turn) + ')：' + t
   }
+  // 历史记录按「agent + 会话 + 天」合并：同键(agent+session+日期)的同类操作记录合并为一条，
+  // times 内部保留每次准确时间，delta 留当天最终版（按天粒度下"当天结束状态"即可复原/计分）
+  function pushMergedHistory(act, entry, meta) {
+    act.history = act.history || []
+    const dayKey = String(entry.at || '').slice(0, 10)
+    const agentKey = String(entry.agent || '')
+    const sessKey = String(entry.session || '')
+    const idx = act.history.findIndex(h => h && h.op === entry.op &&
+      String(h.agent || '') === agentKey && String(h.session || '') === sessKey &&
+      String(h.at || '').slice(0, 10) === dayKey)
+    if (idx >= 0) {
+      const old = act.history[idx]
+      old.times = Array.isArray(old.times)
+        ? old.times.concat(entry.at || nowIso())
+        : (old.at ? [old.at, entry.at || nowIso()] : [entry.at || nowIso()])
+      if (entry.delta && entry.delta.length) old.delta = entry.delta
+      if (entry.note) old.note = entry.note
+      old.at = entry.at || old.at
+      act.history[idx] = old
+    } else {
+      act.history.push(entry)
+    }
+    act.history = act.history.slice(-50)
+  }
+  // 程序保证本会话工作段存在（不依赖模型 op=prepend）：works 无本会话 sid 段 → 自动创建空白段。
+  // 空白段不写 history（未产生有效内容）；后续对话跟踪成功总结时更新内容并统一记一次更新；
+  // 空白段保留（用户确认：无内容=走无模型整理，空白段保留并提醒，不删除）。
+  async function ensureSessionWorkSegment(ownerKey, sid, meta) {
+    try {
+      const { obj: act, path } = await readAgentActive(ownerKey)
+      const works = Array.isArray(act.works) ? act.works : []
+      if (works.some(w => w && w.sid === sid)) return { ok: true, created: false, path }
+      const out = Object.assign({}, act, {
+        works: works.concat([{ sid, text: '', refs: [], updatedAt: nowIso() }]),
+        updatedAt: nowIso(),
+        schemaVersion: 4,
+      })
+      delete out.records
+      delete out.summary
+      await writeJson(path, out)
+      return { ok: true, created: true, path }
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) }
+    }
+  }
   async function writeActive(sid, turn, extra) {
     const ownerKey = (extra && extra.ownerKey) || ''
     const { obj: act, path } = await readAgentActive(ownerKey)
@@ -1508,14 +1553,12 @@ export function apply(ctx) {
           if (idx >= 0 && op !== 'prepend') {
             const oldRec = act.records[idx]
             const oldSnapshot = { ...oldRec, keptAt: nowIso() }
-            act.history = act.history || []
-            act.history.push(histEntry('update', {
+            pushMergedHistory(act, histEntry('update', {
               agent: ownerKey || sid, session: sid, turn,
               note: '活跃记录' + (op === 'replace' ? '覆盖' : op === 'merge' ? '合并' : '追加') + '（旧记录归档）：' + String(oldRec.text || '').slice(0, 60),
               keep: false,
               delta: [{ type: 'record', from: oldRec.text, to: rec.text }],
             }))
-            act.history = act.history.slice(-50)
             // append/merge/replace 统一为"整合替换"：模型输出的是完整整合后的新段落
             // （提示词 7 规则：增量是信息整合不是累加），直接替换文本（旧版已进 history），
             // refs 保留旧指向 + 新指向——不再拼接堆叠（否则会话工作越长越重复）
@@ -1567,14 +1610,12 @@ export function apply(ctx) {
       const newS = String(extra.explicitSummary).trim().slice(0, 120)
       if (newS && !summarySimilar(act.summary, newS)) {
         if (oldSummary) {
-          act.history = act.history || []
-          act.history.push(histEntry('update', {
+          pushMergedHistory(act, histEntry('update', {
             agent: ownerKey || sid, session: sid, turn,
             note: '会话摘要更新（旧摘要归档）：' + oldSummary.slice(0, 80),
             keep: false,
             delta: diffContent(oldSummary, newS),
           }))
-          act.history = act.history.slice(-50)
         }
         act.summary = newS
         act.summaryNoModel = false
@@ -1593,14 +1634,12 @@ export function apply(ctx) {
       const newS = String(topRec.text || '').slice(0, 120)
       if (newS && !summarySimilar(act.summary, newS)) {
         if (oldSummary) {
-          act.history = act.history || []
-          act.history.push(histEntry('update', {
+          pushMergedHistory(act, histEntry('update', {
             agent: ownerKey || sid, session: sid, turn,
             note: '会话摘要同步（记录链顶部）：' + oldSummary.slice(0, 80),
             keep: false,
             delta: diffContent(oldSummary, newS),
           }))
-          act.history = act.history.slice(-50)
         }
         act.summary = newS
         act.summaryUpdatedAt = nowIso()
@@ -1624,13 +1663,11 @@ export function apply(ctx) {
           const body = full.replace(linkRe, '').trim()
           const cut = [links, body ? body.slice(0, 20) : ''].filter(Boolean).join(' ')
           if (cut.length < full.length) {
-            act.history = act.history || []
-            act.history.push(histEntry('update', {
+            pushMergedHistory(act, histEntry('update', {
               agent: 'memory-admin', session: sid, turn,
               note: '会话工作总量压缩（' + (budgetChars / 1000).toFixed(1) + 'k 字预算）：' + full.slice(0, 30) + '…',
               keep: false,
             }))
-            act.history = act.history.slice(-50)
             total = total - full.length + cut.length
             r.text = cut
           } else {
@@ -1893,9 +1930,18 @@ export function apply(ctx) {
     const recent = evs.slice(0, 5).map(o => ({ title: o.title, createdAt: o.createdAt }))
     // 本智能体活跃关键词（注入给模型：当前活跃主题词，随总览自动载入）
     let keywords = []
+    let blankWorks = []
     try {
       const act = await readAgentActive(ownerKey || sid || '')
-      if (act && act.obj && Array.isArray(act.obj.keywords)) keywords = act.obj.keywords.slice(0, 20)
+      if (act && act.obj) {
+        if (Array.isArray(act.obj.keywords)) keywords = act.obj.keywords.slice(0, 20)
+        // 空白工作段检测：程序已建段但尚无内容（模型总结失败/无模型待转正）→ 提醒需要总结
+        if (Array.isArray(act.obj.works)) {
+          blankWorks = act.obj.works
+            .filter(w => w && w.sid && w.sid !== sid && !(w.text && String(w.text).trim()))
+            .map(w => String(w.sid).slice(-8))
+        }
+      }
     } catch (e) {}
     const inc = activeIncident()
     return {
@@ -1903,6 +1949,7 @@ export function apply(ctx) {
       important,
       recent,
       keywords,
+      blankWorks,
       incident: inc ? { id: inc.id, at: inc.at, targetTime: inc.targetTime, files: (inc.files || []).length } : null,
     }
   }
@@ -1928,6 +1975,7 @@ export function apply(ctx) {
       '重要记忆（' + entries.important.length + ' 条）：' + (entries.important.length ? entries.important.join('；') : '（无）'),
     ]
     if (entries.keywords && entries.keywords.length) lines.push('当前活跃关键词：' + entries.keywords.join('、'))
+    if (entries.blankWorks && entries.blankWorks.length) lines.push('⚠ 待总结提醒：会话 ' + entries.blankWorks.join('、') + ' 的工作段仍为空白（模型总结未成功或等待转正），需要总结补全。')
     if (entries.recent.length) lines.push('最近事件：' + entries.recent.map(o => o.title).join('；'))
     if (entries.incident) {
       lines.push('⚠ 隔离通知：事件 ' + entries.incident.id + ' 于 ' + entries.incident.at + ' 触发，目标时间 ' + entries.incident.targetTime + '，涉及 ' + entries.incident.files + ' 个文件。可调用 memory（cmd=isolation_restore，回滚）或 memory（cmd=isolation_clear，解除）。')
@@ -3867,6 +3915,9 @@ function parseAdminJson(text) {
   // 对话跟踪任务主体（排队执行）
   async function runTurnSummaryTask(sid, turn, meta, gap) {
     const tc = trackCfg()
+    // 程序保证本会话工作段存在（新会话自动创建空白段，不依赖模型 op=prepend；空白段保留）
+    const ownerKey0 = (meta && meta.ownerKey) || (meta && meta.agent) || sid
+    try { await ensureSessionWorkSegment(ownerKey0, sid, meta) } catch (e1) {}
     // 读本轮步骤
     const steps = await readStepRange(sid, turn, 1, undefined)
     if (!steps.length) return { ok: false, text: '轮次 ' + turn + ' 无步骤内容' }
@@ -3905,19 +3956,44 @@ function parseAdminJson(text) {
       items = [{ id: sid + '@' + turn + (refPrecision === 'step' ? ':truncated' : ''), text: eco.userText }]
     }
     if (!items.length) return { ok: false, text: '无内容可总结' }
-    // B-2：注入本会话现有工作信息（works 里 sid 匹配的段落），供模型判断 op（append/merge/replace/prepend）
+    // B-2：注入本会话现有工作信息（works 里 sid 匹配的段落）+ 会话跟踪状态，
+    // 供模型判断 op（append/merge/replace/prepend）。程序已保证段存在（空白段=新会话首次总结）
     try {
       const ownerKey2 = (meta && meta.ownerKey) || (meta && meta.agent) || sid
       const act2 = await readAgentActive(ownerKey2)
       const works2 = Array.isArray(act2.obj && act2.obj.works) ? act2.obj.works : []
       const cur = works2.find(w => w && w.sid === sid)
+      // 会话是否被跟踪：聚合文件存在且 trackMeta 有记录 → 已被对话跟踪；否则模型需承担部分跟踪职责
+      let trackedStatus = '未被跟踪'
+      try {
+        const aggPathT = p(dailyBaseDir(), ymPath(new Date()), sanitizeFile(sid) + '.json')
+        const aggT = await readJson(aggPathT)
+        if (aggT && !isTombstone(aggT) && aggT.kind === 'event' && Array.isArray(aggT.trackMeta) && aggT.trackMeta.length) trackedStatus = '已被跟踪（跟踪基准见聚合文件 trackMeta）'
+      } catch (e6) {}
       if (cur && cur.text && String(cur.text).trim()) {
-        items.unshift({ id: sid + '@' + turn + ':curwork', text: '【本会话现有工作信息】\n' + String(cur.text).slice(0, 1500) + '\n\n请参考上述"现有工作信息"判断本轮进展的 op（更新/合并/覆盖/新增），并保持内容精简。' })
+        items.unshift({ id: sid + '@' + turn + ':curwork', text: '【本会话现有工作信息】\n' + String(cur.text).slice(0, 1500) + '\n\n【会话跟踪状态】' + trackedStatus + '。请参考上述"现有工作信息"判断本轮进展的 op（更新/合并/覆盖/新增），并保持内容精简。' })
+      } else if (cur) {
+        // 程序已建空白段（新会话首次有效总结）：提示填充本会话工作段落（段已存在，无需 prepend 新建）
+        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】当前为空（本会话首次总结，程序已为本会话创建空白工作段）。\n【会话跟踪状态】' + trackedStatus + '。\n请按工作事情和进度总结本轮内容，写入本会话的工作段落（op 用 append 更新已有空白段即可），带 轮次/轮次+步 指向对应信息，并保持内容精简。' })
       } else {
-        // 无本会话工作段（新会话/新窗口）→ 提示本次为创建新会话，op 应为 prepend（插到最前）
-        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】无 —— 本次为全新会话/新窗口，当前活跃中还没有本会话的"会话工作"段落。请用 op="prepend" 创建本会话的工作段落（插到最前，旧的往后顶），并保持内容精简。' })
+        // 兜底：程序未建段（异常路径）→ 提示创建
+        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】无 —— 本次为全新会话/新窗口，当前活跃中还没有本会话的"会话工作"段落。请用 op="prepend" 创建本会话的工作段落（插到最前，旧的往后顶），并保持内容精简。\n【会话跟踪状态】' + trackedStatus })
       }
     } catch (e4) {}
+    // 空白段 + 无模型整理区有该会话内容 → 读取无模型内容作为推断素材（填充空白段后移除无模型文件）
+    try {
+      const act3 = await readAgentActive((meta && meta.ownerKey) || (meta && meta.agent) || sid)
+      const works3 = Array.isArray(act3.obj && act3.obj.works) ? act3.obj.works : []
+      const cur3 = works3.find(w => w && w.sid === sid)
+      const isBlank = !(cur3 && cur3.text && String(cur3.text).trim())
+      if (isBlank) {
+        const nmPath3 = p(noModelDir(), sanitizeFile(sid) + '.json')
+        const nm3 = await readJson(nmPath3)
+        if (nm3 && !isTombstone(nm3) && nm3.kind === 'no-model' && nm3.content) {
+          items.unshift({ id: sid + '@' + turn + ':nomodel', text: '【本会话无模型整理记忆】\n' + String(nm3.content).slice(0, 3000) + '\n\n请基于以上未整理内容推断本会话的工作信息（这些是此前模型不可用时按轮次累积的用户消息引用），总结后写入本会话工作段（op 用 append 更新空白段），并保持内容精简。' })
+        }
+      }
+    } catch (e7) {}
     // 双模式：重新总结时注入活跃记忆作为"态度"上下文（mode=current/at-time；at-time 回溯到该轮次发生时间）
     const mode = (meta && meta.mode) || ''
     if (mode) {
@@ -4038,6 +4114,12 @@ function parseAdminJson(text) {
         activeBase.lastAction = 'memory_track_at-time'
       }
       await writeActive(sid, turn, activeBase)
+      // 总结成功：移除该会话无模型整理记忆（内容已转正到聚合文件/活跃 works，避免重复推断）
+      try {
+        const nmP = p(noModelDir(), sanitizeFile(sid) + '.json')
+        const nmO = await readJson(nmP)
+        if (nmO && !isTombstone(nmO) && nmO.kind === 'no-model') await tombstone(nmP, nmP)
+      } catch (e8) {}
       return { ok: true, text: '对话跟踪总结已追加（会话 ' + String(sid).slice(-8) + ' 轮次 ' + turn + '）：\n' + res.content + '\n\n教训条目 ' + lessonCount2 + ' 条', data: { turn, path: relOf(aggPath), lessons: lessonCount2, chain: res.chain } }
     }
     // 新建聚合文件（首轮）
@@ -4113,6 +4195,12 @@ function parseAdminJson(text) {
       activeBase2.lastAction = 'memory_track_at-time'
     }
     await writeActive(sid, turn, activeBase2)
+    // 总结成功：移除该会话无模型整理记忆（内容已转正到聚合文件/活跃 works）
+    try {
+      const nmP2 = p(noModelDir(), sanitizeFile(sid) + '.json')
+      const nmO2 = await readJson(nmP2)
+      if (nmO2 && !isTombstone(nmO2) && nmO2.kind === 'no-model') await tombstone(nmP2, nmP2)
+    } catch (e9) {}
     return { ok: true, text: '对话跟踪总结完成（轮次 ' + turn + '）：\n' + res.content + '\n\n教训条目 ' + lessonCount + ' 条，溯源 ' + (res.chain.length ? res.chain.join(' → ') : '（无）'), data: { turn, path: relOf(path), lessons: lessonCount, chain: res.chain } }
   }
   // ═══════════════════════════════════════════════════════════════════
