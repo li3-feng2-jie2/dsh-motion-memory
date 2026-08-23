@@ -1498,13 +1498,14 @@ export function apply(ctx) {
       }
       if (rec.text) {
         const op = rec.op
-        if (op === 'append' || op === 'merge' || op === 'replace') {
+        if (op === 'prepend' || op === 'append' || op === 'merge' || op === 'replace') {
           // 找同主题记录（key 匹配）；再按会话 id 匹配；仍找不到 = 该会话还没有段 → 走下方新建分支
           // （不再回退最后一条：否则新会话第一次总结会 append 到别的会话的段，把多会话混成 1 段）
           let idx = -1
           if (recKey) idx = act.records.findIndex(r => r && r.key === recKey)
           if (idx < 0 && rec.sid) idx = act.records.findIndex(r => r && r.sid === rec.sid)
-          if (idx >= 0) {
+          // prepend：即使已有同主题段也不走"整合替换"，而是并入下方"插到段前"分支（全新工作插到最前）
+          if (idx >= 0 && op !== 'prepend') {
             const oldRec = act.records[idx]
             const oldSnapshot = { ...oldRec, keptAt: nowIso() }
             act.history = act.history || []
@@ -3912,6 +3913,9 @@ function parseAdminJson(text) {
       const cur = works2.find(w => w && w.sid === sid)
       if (cur && cur.text && String(cur.text).trim()) {
         items.unshift({ id: sid + '@' + turn + ':curwork', text: '【本会话现有工作信息】\n' + String(cur.text).slice(0, 1500) + '\n\n请参考上述"现有工作信息"判断本轮进展的 op（更新/合并/覆盖/新增），并保持内容精简。' })
+      } else {
+        // 无本会话工作段（新会话/新窗口）→ 提示本次为创建新会话，op 应为 prepend（插到最前）
+        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】无 —— 本次为全新会话/新窗口，当前活跃中还没有本会话的"会话工作"段落。请用 op="prepend" 创建本会话的工作段落（插到最前，旧的往后顶），并保持内容精简。' })
       }
     } catch (e4) {}
     // 双模式：重新总结时注入活跃记忆作为"态度"上下文（mode=current/at-time；at-time 回溯到该轮次发生时间）
