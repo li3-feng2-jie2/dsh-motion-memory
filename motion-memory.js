@@ -3722,20 +3722,74 @@ function parseAdminJson(text) {
       }
       const chain = res.parsed.sourceChain && res.parsed.sourceChain.length ? res.parsed.sourceChain : res.itemIds
       const content = res.parsed.compress === false ? '' : (res.parsed.content || res.text)
-      return { ok: true, parsed: res.parsed, sourceChain: chain, content, itemIds: res.itemIds }
+      return { ok: true, parsed: res.parsed, sourceChain: chain, content, itemIds: res.itemIds, model: (opts && (opts.provider + '/' + opts.model)) || 'main' }
     }
-    if (concurrency <= 0) {
+    // 块级委派（阶段3）：工具模型主池 worker 全忙 + 仍有剩余块 + 管理员有模型 + 开关允许 → 启动管理员委派池。
+    // 委派块用管理员模型（同一 adminPrompt 契约，仅模型实例不同），块预算取 min(工具, 管理员) 保证两模型都能处理。
+    // 默认 delegateBlocks=false（仅工具模型，不外派）。
+    const delegateOn = !!(meta && meta.delegateBlocks) && (sourceLabel || '').indexOf('对话跟踪') === 0 && adminHasModel()
+    let adminOpts = null
+    let adminConcurrency = 0
+    if (delegateOn) {
+      const admC = adminCfg()
+      adminOpts = {
+        provider: admC.model && admC.model.provider,
+        model: admC.model && admC.model.model,
+        contextTokens: admC.contextTokens,
+        percent: admC.summaryPercent,
+        outputTokens: admC.outputTokens,
+        concurrency: Math.max(1, Number(admC.concurrency) || 1),
+        langTokens: admC.langTokens,
+        extraJson: admC.extraJson,
+      }
+      if (adminOpts.provider && adminOpts.model) {
+        const adminBudget = blockBudget(adminOpts)
+        if (adminBudget < budget) { /* 块预算取 min：小于工具预算的块可委派 */ }
+        adminConcurrency = Math.max(1, Number(adminOpts.concurrency) || 1)
+      } else {
+        adminOpts = null
+        adminConcurrency = 0
+      }
+    }
+    if (concurrency <= 0 && adminConcurrency <= 0) {
       for (let i = 0; i < chunks.length; i++) results.push(await runOne(chunks[i], i))
     } else {
       let next = 0
       const workers = []
-      for (let w = 0; w < Math.min(concurrency, chunks.length); w++) {
+      // 主池（工具模型，concurrency 个）
+      const mainWorkers = Math.max(0, concurrency)
+      for (let w = 0; w < mainWorkers; w++) {
         workers.push((async () => {
           while (next < chunks.length) {
             const i = next++
             results[i] = await runOne(chunks[i], i)
           }
         })())
+      }
+      // 委派池（管理员模型）：仅在主池 worker 全忙（mainWorkers>0 且已有等待）或主池为 0 时生效。
+      // 实现：主池 worker 数量固定；委派池与主池共享 next 计数器（工作窃取），块按各自模型预算领走。
+      if (adminConcurrency > 0 && (concurrency > 0 || chunks.length > 0)) {
+        // 只有开启委派且工具并发不足（块数 > 主池并发）才真正启动委派池，避免正常场景外派
+        if (chunks.length > Math.max(1, mainWorkers)) {
+          for (let w = 0; w < adminConcurrency; w++) {
+            workers.push((async () => {
+              while (next < chunks.length) {
+                const i = next++
+                // 委派池领块：若该块超管理员预算，交给主池（next 已抢占则重试——简单起见直接跳过超大块）
+                const chunk = chunks[i]
+                const chunkTokens = chunk.reduce((n, it) => n + estimateTokens(it.text || '', opts.langTokens), 0)
+                const adminBudget = adminOpts ? blockBudget(adminOpts) : 0
+                if (chunkTokens > adminBudget) { results[i] = await runOne(chunk, i); continue }
+                const label = (sourceLabel || '') + '（块' + (i + 1) + '/' + chunks.length + '·管理员委派）'
+                const res = await summarizeChunk(chunk, adminOpts, meta, label)
+                if (!res.ok) { results[i] = res; continue }
+                const chain2 = res.parsed.sourceChain && res.parsed.sourceChain.length ? res.parsed.sourceChain : res.itemIds
+                const content2 = res.parsed.compress === false ? '' : (res.parsed.content || res.text)
+                results[i] = { ok: true, parsed: res.parsed, sourceChain: chain2, content: content2, itemIds: res.itemIds, model: (adminOpts && (adminOpts.provider + '/' + adminOpts.model)) || 'admin' }
+              }
+            })())
+          }
+        }
       }
       await Promise.all(workers)
     }
@@ -3838,8 +3892,10 @@ function parseAdminJson(text) {
   function trackCfg() {
     const c = cfg()
     if (!c.admin) c.admin = {}
-    if (!c.admin.track) c.admin.track = { enabled: false, interval: 5, economize: 'none', truncK: 2, startTurn: 0, refPrecision: 'turn', injectActive: false }
+    if (!c.admin.track) c.admin.track = { enabled: false, interval: 5, economize: 'none', truncK: 2, startTurn: 0, refPrecision: 'turn', injectActive: false, delegateBlocks: false }
     if (!c.admin.track.refPrecision) c.admin.track.refPrecision = 'turn'
+    // 块级委派默认仅工具模型（用户确认：默认不允许外派到记忆管理员）；开启后主池占满+剩余块才委派
+    if (c.admin.track.delegateBlocks === undefined || c.admin.track.delegateBlocks === null) c.admin.track.delegateBlocks = false
     return c.admin.track
   }
   // 切段规则：含工具调用的 step 独立成段；连续纯文本 step 合并；末尾无工具的报告段独立
@@ -4163,8 +4219,8 @@ function parseAdminJson(text) {
         items.unshift({ id: sid + '@' + turn + ':active', text: '【' + (mode === 'at-time' ? '当时' : '当前') + '活跃记忆】\n' + activeSummary + '\n\n请以上述活跃记忆的态度总结下面的轮次内容。' })
       }
     }
-    // 压缩引擎（meta 携带 refPrecision，summarizeChunk 据此决定提示词精度）
-    const res = await chunkCompress(items, opts, Object.assign({}, meta, { refPrecision }), '对话跟踪 会话 ' + sid + ' 轮次 ' + turn)
+    // 压缩引擎（meta 携带 refPrecision，summarizeChunk 据此决定提示词精度；delegateBlocks 控制块级委派）
+    const res = await chunkCompress(items, opts, Object.assign({}, meta, { refPrecision, delegateBlocks: !!tc.delegateBlocks }), '对话跟踪 会话 ' + sid + ' 轮次 ' + turn)
     if (!res.ok) {
       // 总结失败 → 走无模型整理流程（用户要求：失败也在轮次页显示，标注"模型总结失败"）
       await trackNoModelRecord(sid, turn, Object.assign({}, meta, { failNote: res.error || '模型总结失败' }))
@@ -6176,13 +6232,14 @@ function parseAdminJson(text) {
         if (Array.isArray(pa.langTokens)) { a.langTokens = pa.langTokens; changed = true }
         if (pa.extraJson !== undefined) { a.extraJson = pa.extraJson; changed = true }
         // 把扁平开关写回子对象
-        if (pa.track !== undefined || pa.trackInterval !== undefined || pa.trackStartTurn !== undefined || pa.trackEconomize !== undefined || pa.trackTruncK !== undefined) {
+        if (pa.track !== undefined || pa.trackInterval !== undefined || pa.trackStartTurn !== undefined || pa.trackEconomize !== undefined || pa.trackTruncK !== undefined || pa.trackDelegateBlocks !== undefined) {
           a.track = a.track || {}
           if (pa.track !== undefined) a.track.enabled = !!pa.track
           if (pa.trackInterval !== undefined) a.track.interval = Number(pa.trackInterval)
           if (pa.trackStartTurn !== undefined) a.track.startTurn = Number(pa.trackStartTurn)
           if (pa.trackEconomize !== undefined) a.track.economize = String(pa.trackEconomize)
           if (pa.trackTruncK !== undefined) a.track.truncK = Number(pa.trackTruncK)
+          if (pa.trackDelegateBlocks !== undefined) a.track.delegateBlocks = !!pa.trackDelegateBlocks
         }
         if (pa.enhance !== undefined || pa.enhanceAutoWrite !== undefined || pa.enhanceMaxDepth !== undefined) {
           a.enhance = a.enhance || {}

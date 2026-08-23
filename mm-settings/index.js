@@ -436,6 +436,7 @@ export function apply(ctx) {
           trackStartTurn: track.startTurn === undefined || track.startTurn === null ? 0 : track.startTurn,
           trackEconomize: track.economize || 'none', trackTruncK: track.truncK || 2,
           trackRefPrecision: (track.refPrecision === 'step') ? 'step' : 'turn',
+          trackDelegateBlocks: !!(track.delegateBlocks),
           enhance: !!(enhance.enabled), enhanceMaxDepth: enhance.maxExpandDepth || 3,
           period: !!(period.enabled), periodDays: period.intervalDays || 1, periodHours: period.intervalHours || 0,
           periodMultiWindow: !!(period.multiWindowTail), periodUseTools: period.useTools !== false,
@@ -614,7 +615,7 @@ export function apply(ctx) {
           }
           if (pa.periodTruncK !== undefined) { a.period = a.period || {}; a.period.truncK = Math.max(0, Number(pa.periodTruncK) || 2); changed = true }
           if (pa.periodEconomize !== undefined) { a.period = a.period || {}; a.period.economize = Array.isArray(pa.periodEconomize) ? pa.periodEconomize : String(pa.periodEconomize); changed = true }
-          if (pa.track !== undefined || pa.trackInterval !== undefined || pa.trackStartTurn !== undefined || pa.trackEconomize !== undefined || pa.trackTruncK !== undefined || pa.trackModel !== undefined || pa.trackRefPrecision !== undefined) {
+          if (pa.track !== undefined || pa.trackInterval !== undefined || pa.trackStartTurn !== undefined || pa.trackEconomize !== undefined || pa.trackTruncK !== undefined || pa.trackModel !== undefined || pa.trackRefPrecision !== undefined || pa.trackDelegateBlocks !== undefined) {
             a.track = a.track || {}
             if (pa.track !== undefined) a.track.enabled = !!pa.track
             if (pa.trackInjectActive !== undefined) a.track.injectActive = !!pa.trackInjectActive
@@ -623,6 +624,7 @@ export function apply(ctx) {
             if (pa.trackEconomize !== undefined) a.track.economize = Array.isArray(pa.trackEconomize) ? pa.trackEconomize : String(pa.trackEconomize)
             if (pa.trackTruncK !== undefined) a.track.truncK = Number(pa.trackTruncK)
             if (pa.trackRefPrecision !== undefined) { a.track.refPrecision = (String(pa.trackRefPrecision) === 'step') ? 'step' : 'turn'; changed = true }
+            if (pa.trackDelegateBlocks !== undefined) { a.track.delegateBlocks = !!pa.trackDelegateBlocks; changed = true }
           }
           if (pa.enhance !== undefined || pa.enhanceMaxDepth !== undefined || pa.enhanceModel !== undefined) {
             a.enhance = a.enhance || {}
