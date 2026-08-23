@@ -1513,12 +1513,10 @@ export function apply(ctx) {
               delta: [{ type: 'record', from: oldRec.text, to: rec.text }],
             }))
             act.history = act.history.slice(-50)
-            if (op === 'append') {
-              act.records[idx] = Object.assign({}, oldRec, { text: oldRec.text + '。' + rec.text, refs: (oldRec.refs || []).concat(rec.refs), updatedAt: nowIso() })
-            } else {
-              // merge / replace：整体替换文本与指向（旧版已进 history）
-              act.records[idx] = Object.assign({}, oldRec, { text: rec.text, refs: rec.refs, updatedAt: nowIso() })
-            }
+            // append/merge/replace 统一为"整合替换"：模型输出的是完整整合后的新段落
+            // （提示词 7 规则：增量是信息整合不是累加），直接替换文本（旧版已进 history），
+            // refs 保留旧指向 + 新指向——不再拼接堆叠（否则会话工作越长越重复）
+            act.records[idx] = Object.assign({}, oldRec, { text: rec.text, refs: (oldRec.refs || []).concat(rec.refs), updatedAt: nowIso() })
           } else {
             // prepend（默认）：新记录插到最前；若同主题（key/sid）段已存在 → 合并到该段前面（保证每会话一段）
             const mergeIdx = recKey ? act.records.findIndex(r => r && (r.key === recKey || (rec.sid && r.sid === rec.sid))) : -1
@@ -4022,7 +4020,7 @@ function parseAdminJson(text) {
         explicitSummary: res.content || '',
         record: {
           op: opValid ? String(parsedOp) : 'append', key: 'session:' + sid,
-          text: withSourceRef(String(res.content || '').split('\n')[0].slice(0, 80), sid, turn),
+          text: withSourceRef(String(res.content || ''), sid, turn),
           refs: [{ kind: 'event', title: '对话跟踪总结：会话 ' + sid, ref: relOf(aggPath) }],
         },
       }
