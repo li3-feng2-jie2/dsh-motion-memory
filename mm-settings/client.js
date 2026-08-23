@@ -1060,7 +1060,8 @@ function MemoryView(props) {
         var lbl = lm ? lm[1] : tok
         var hr = lm ? lm[2] : ''
         var ca = { linkText: lbl, href: hr }
-        parts.push(React.createElement('a', { key: (keyBase || 'm') + '-' + k, href: 'javascript:void(0)', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', cursor: 'pointer' }, onClick: function () { linkClick(ca.linkText, ca.href) } }, lbl))
+        // IIFE 捕获：var 是函数级作用域，直接引用 ca 会让所有链接点击都指向最后一个链接
+        parts.push(React.createElement('a', { key: (keyBase || 'm') + '-' + k, href: 'javascript:void(0)', style: { color: 'var(--dsw-alias-label-primary)', textDecoration: 'underline', cursor: 'pointer' }, onClick: (function (c) { return function () { linkClick(c.linkText, c.href) } })(ca) }, lbl))
       } else {
         parts.push(React.createElement('em', { key: (keyBase || 'm') + '-' + k }, tok.slice(1, -1)))
       }

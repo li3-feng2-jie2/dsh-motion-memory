@@ -1497,10 +1497,11 @@ export function apply(ctx) {
       if (rec.text) {
         const op = rec.op
         if (op === 'append' || op === 'merge' || op === 'replace') {
-          // 找同主题记录（key 匹配）；无 key 或找不到时回退最后一条（保持旧行为）
+          // 找同主题记录（key 匹配）；再按会话 id 匹配；仍找不到 = 该会话还没有段 → 走下方新建分支
+          // （不再回退最后一条：否则新会话第一次总结会 append 到别的会话的段，把多会话混成 1 段）
           let idx = -1
           if (recKey) idx = act.records.findIndex(r => r && r.key === recKey)
-          if (idx < 0) idx = act.records.length - 1
+          if (idx < 0 && rec.sid) idx = act.records.findIndex(r => r && r.sid === rec.sid)
           if (idx >= 0) {
             const oldRec = act.records[idx]
             const oldSnapshot = { ...oldRec, keptAt: nowIso() }
