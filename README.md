@@ -1,4 +1,4 @@
-# 运动记忆（Motion Memory）v0.1.0
+﻿# 运动记忆（Motion Memory）v0.2.0
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话中值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
@@ -71,7 +71,7 @@ mklink /J "<你的profile>\node_modules\mm-settings" "<你的profile>\plugins\mo
 
 ## 版本与更新
 
-- **当前版本**：v0.1.0（初行版）
+- **当前版本**：v0.2.0（重构版）
 - **git 安装（推荐）**：插件启动后自动检查更新（启动 8 秒后一次 + 每 12 小时一次）。有新版时：
   - 设置页 →「运动记忆」→「版本与更新」→ 点「检查更新」查看，点「更新」拉取，**重启 DSH 生效**；
   - 或命令：`memory cmd=update`（检查） / `memory cmd=update action=apply`（更新）。
