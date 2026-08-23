@@ -73,7 +73,8 @@ dsh plugin --profile <你的profile名> add github:li3-feng2-jie2/dsh-motion-mem
 | `memory` | 综合入口：status / config / notify / recent / history / recall_past / restore / track_run / period_run / period_status / enhance / admin_view / admin_summarize / isolation 等 |
 | `memory_query` | 查询/回忆：开工总览 / keyword 搜索 / open 阅读（关联展开）/ openTurn 读轮次原文 / recent / enhance |
 | `memory_add` | 写入：keyword / necessary / event / update / edit（用户确认强改）/ forget |
-| `memory_noop` | 无更新占位：判定无有效记忆更新时触发，不写文件 |
+
+> 会话模型可调用工具共 3 个（`memory` / `memory_query` / `memory_add`）；另有内部无更新占位（`memory_noop`）仅用于管理员总结的降级通道，不暴露给会话调用。
 
 ## 交流群
 

@@ -361,6 +361,9 @@ export function apply(ctx) {
       modelProvider: meta && meta.modelProvider,
       modelName: meta && meta.modelName,
       toolContext: meta && meta.toolContext,
+      // v5：调用定位——step（会话内第几步调用）；times（同 agent+会话 防重合并后的阅读时间数组）
+      step: meta && meta.step,
+      times: meta && meta.times,
     }
   }
   // 溯源引用构造：会话@轮次[:stepN]（meta 有 session+turn 时；step 可选）
@@ -1232,6 +1235,24 @@ export function apply(ctx) {
         // 总结队列并发（对话跟踪等重活同时运行数；0=按顺序执行，默认防本地小模型排队）
         summaryConcurrency: 0,
       },
+      // LLM 写入消歧判定（P0-2）：memory_add 有近似候选时让模型判断"同一实体/不同实体/不确定"
+      // （默认关省 token；模型失败自动回退机械查重规则）
+      dedupJudge: {
+        enabled: false,
+        model: { provider: '', model: '' },
+        topCandidates: 3,
+      },
+      // 语义检索（P0-1）：本地 embedding（ollama / lmstudio）向量索引 + 关键词多路召回融合
+      // （默认关；provider 不可用或 embed 失败自动回退纯关键词检索）
+      semanticSearch: {
+        enabled: false,
+        provider: '',        // 'ollama' | 'lmstudio' | ''
+        model: '',           // 如 ollama:bge-m3 / nomic-embed-text；lmstudio:模型名
+        topK: 8,             // 语义召回条数
+        threshold: 0.35,     // 余弦相似度阈值（低于不召回）
+        weight: 0.5,         // 语义分在融合排序中的权重（0-1）
+        indexEvents: false,  // 事件记忆是否索引（默认不索引控制体积）
+      },
     }
   }
   function cfg() { return state.config || defaultConfig(baseWs()) }
@@ -1823,7 +1844,7 @@ export function apply(ctx) {
   // ── 记忆总览注入（首轮一次性 + digest 去重；不做每轮检查）──────────────
   // 机制：agent/pre-step 时对比「会话历史中最后可见的总览消息」与「当前记忆
   // 状态」的 sha256 digest —— 首次会话注入一条持久 user 消息；此后记忆无变化
-  // 则绝不再发（agent 按需调用 memory_recall/memory_query 查看）；必要记忆、
+  // 则绝不再发（agent 按需调用 memory_query 查看）；必要记忆、
   // 重要记忆、最近事件或隔离事件变化时才替换。不再注册 systemPrompt.section
   // （那是每轮现算注入）。session/event 与 agent/request 监听保留用于状态维护，
   // 为后续 agent 自动总结整理记忆功能预留事件通道。
@@ -1900,20 +1921,20 @@ export function apply(ctx) {
   function renderOverview(entries) {
     const lines = [
       '<system-reminder>',
-      '运动记忆·会话总览（仅当记忆变化时更新；需要细节时用 memory_recall / memory_query 查看）：',
+      '运动记忆·会话总览（仅当记忆变化时更新；需要细节时用 memory_query 查看）：',
       '必要记忆：' + (entries.necessary || '（无）'),
       '重要记忆（' + entries.important.length + ' 条）：' + (entries.important.length ? entries.important.join('；') : '（无）'),
     ]
     if (entries.keywords && entries.keywords.length) lines.push('当前活跃关键词：' + entries.keywords.join('、'))
     if (entries.recent.length) lines.push('最近事件：' + entries.recent.map(o => o.title).join('；'))
     if (entries.incident) {
-      lines.push('⚠ 隔离通知：事件 ' + entries.incident.id + ' 于 ' + entries.incident.at + ' 触发，目标时间 ' + entries.incident.targetTime + '，涉及 ' + entries.incident.files + ' 个文件。可调用 memory_isolation_restore（回滚）或 memory_isolation_clear（解除）。')
+      lines.push('⚠ 隔离通知：事件 ' + entries.incident.id + ' 于 ' + entries.incident.at + ' 触发，目标时间 ' + entries.incident.targetTime + '，涉及 ' + entries.incident.files + ' 个文件。可调用 memory（cmd=isolation_restore，回滚）或 memory（cmd=isolation_clear，解除）。')
     }
     // 使用指引（行为引导，解决"调用频率低"）：
     lines.push('记忆使用约定：')
     lines.push('- 对话中出现 关键决策/用户偏好/项目事实/踩坑教训 → memory_add 记录')
     lines.push('- 任务涉及以往工作、用户提及"上次/之前" → 先 memory_query 查相关记忆')
-    lines.push('- 用户反复强调的内容（"记住/以后都这样"） → memory_necessary 写入必要记忆')
+    lines.push('- 用户反复强调的内容（"记住/以后都这样"） → memory_add（kind=necessary）写入必要记忆')
     lines.push('- 达成阶段性成果/重要经验 → memory_add（kind=event）沉淀事件；需要时 memory（cmd=notify）查看变更通知')
     lines.push('</system-reminder>')
     return createUserMessage({
@@ -1998,7 +2019,7 @@ export function apply(ctx) {
       maybeMigrate().catch(() => {})
       signal.throwIfAborted()
       // 只注入一次：本会话已发布过总览 → 永不再注入。
-      // 后续有需求由 agent 自行调用 memory_recall / memory_query / memory_recent。
+      // 后续有需求由 agent 自行调用 memory_query / memory（cmd=recall_past / recent）。
       const history = overviewHistory(agent)
       if (history.published) return decision
       const existing = overviewMessage(decision.messages)
@@ -2069,7 +2090,7 @@ export function apply(ctx) {
     return { ok: true, text: state.notifyOff.has(sid) ? '本会话变更通知：关闭' : '本会话变更通知：开启' }
   }
   // 记忆综合入口（低频/管理员/隔离/手动）
-  tool('memory', '运动记忆·综合入口：status=状态；config=配置读写；notify=变更通知开关；recent=最近活动；history=历史记录；recall_past=往时回忆；restore=捡回；track_run=对话跟踪手动；period_run=周期手动；period_status=周期状态；enhance=查询强化；admin_view=查看失败记录；admin_summarize=管理员压缩；isolation=隔离；isolation_restore=隔离回滚；isolation_clear=解除隔离。记忆写入后当前活跃的 keywords 会同步整理（移除过时/重复词、加入新主题）。', {
+  tool('memory', '运动记忆·综合入口：status=状态；config=配置读写；notify=变更通知开关；recent=最近活动；history=历史记录；recall_past=往时回忆；restore=捡回；track_run=对话跟踪手动；period_run=周期手动（普通会话触发需用户确认）；period_status=周期状态；enhance=查询强化；admin_view=查看失败记录；admin_summarize=管理员压缩；isolation=隔离；isolation_restore=隔离回滚；isolation_clear=解除隔离。记忆写入后当前活跃的 keywords 会同步整理（移除过时/重复词、加入新主题）。', {
     cmd: { type: 'string', enum: ['status', 'config', 'notify', 'recent', 'history', 'recall_past', 'restore', 'track_run', 'period_run', 'period_status', 'enhance', 'admin_view', 'admin_summarize', 'isolation', 'isolation_restore', 'isolation_clear'], description: '子命令' },
     action: { type: 'string', description: 'cmd=notify: on/off/status' },
     title: { type: 'string', description: 'cmd=history/restore 等：标题' },
@@ -2083,6 +2104,15 @@ export function apply(ctx) {
     sessionId: { type: 'string', description: '目标会话 id' },
     query: { type: 'string', description: 'cmd=enhance：原始查询词' },
     detail: { type: 'boolean', description: 'cmd=status/admin_view：更多详情' },
+    // cmd=period_run 参数：周期总结手动触发（普通会话触发会弹用户确认；管理员/界面/定时无闸门）
+    scope: { type: 'integer', description: 'cmd=period_run：素材广度 1/2/3（1=仅事件+无模型记忆；2=+会话首尾；3=+全量轮次）' },
+    scopeDetail: { type: 'string', description: 'cmd=period_run：素材档位细节（infer / infer-full / infer-tail）' },
+    useSessionModel: { type: 'boolean', description: 'cmd=period_run：true=用当前会话主力模型执行（默认用周期独立模型，空则管理员模型）' },
+    from: { type: 'integer', description: 'cmd=period_run：起始时间戳（历史重总结）' },
+    to: { type: 'integer', description: 'cmd=period_run：结束时间戳（历史重总结）' },
+    ignoreSummarized: { type: 'boolean', description: 'cmd=period_run：忽略已总结标记，强制重新处理' },
+    truncK: { type: 'integer', description: 'cmd=period_run：省 token 截断量（k）' },
+    resetTimer: { type: 'boolean', description: 'cmd=period_run：true=只重置定时倒计时、不执行总结' },
   }, ['cmd'], async (args, meta) => {
     switch (args.cmd) {
       case 'notify': return memCmdNotify(args, meta)
@@ -2104,10 +2134,9 @@ export function apply(ctx) {
       default: return { ok: false, text: '（memory cmd=' + args.cmd + ' 待迁移）' }
     }
   })
-  // memory_noop（批2）：无更新工具——模型/agent 判定本次总结无有效更新时触发，正常跳过不写文件
-  tool('memory_noop', '运动记忆·无更新：本次总结/整理判定无有效记忆更新时触发（如内容无长期价值、无需压缩、无新信息）。触发后正常结束，不写任何记忆文件。', {}, [], async (args, meta) => {
-    return { ok: true, text: '已判定无更新（memory_noop），本次总结跳过，未写任何记忆。', skipped: true }
-  })
+  // memory_noop 不再注册为会话工具：它是内部组装提示词的降级通道契约
+  // （管理员 LLM 输出 {"tool":"memory_noop"} 表示无更新，见 parseToolFormatOutput / 降级执行），
+  // 不暴露给会话模型直接调用；会话内"无更新"通过管理员 JSON 契约 compress=false 表达。
 
   // ── 工具注册 ───────────────────────────────────────────────────────────
   function tool(name, description, properties, required, run) {
@@ -2143,9 +2172,21 @@ export function apply(ctx) {
             if (sel) { modelProvider = String(sel.provider || ''); modelName = String(sel.model || '') }
           }
         } catch (e) {}
+        // 调用定位（v5）：从 agent 内存事件流取当前 turn 的最后 step，供历史记录溯源
+        let step = 0
+        try {
+          const evs = agent && agent.session && agent.session.events
+          if (Array.isArray(evs)) {
+            for (let i = evs.length - 1; i >= 0; i--) {
+              const e = evs[i]
+              const d = e && e.data
+              if (e.type === 'step/start' && d && d.turn === turn) { step = Number(d.step) || 0; break }
+            }
+          }
+        } catch (e) {}
         try {
           if (agentId.indexOf('preset:') === 0) await mergeLegacyOwners(agentId).catch(() => {})
-          return await run(args || {}, { session, turn, agent: agentId, _execAgent: agent, modelProvider, modelName, toolContext: name })
+          return await run(args || {}, { session, turn, step, agent: agentId, _execAgent: agent, modelProvider, modelName, toolContext: name })
         }
         catch (e) { return { ok: false, text: '运动记忆错误: ' + (e && e.message || String(e)) } }
       },
@@ -2231,7 +2272,19 @@ export function apply(ctx) {
       if (!found) return { ok: false, text: '重要记忆中未找到标题：' + args.open + '（可先 keyword 搜索，或开启 queryOtherAgents 扩大范围）' }
       found.obj.lastAccessedAt = nowIso()
       found.obj.history = found.obj.history || []
-      found.obj.history.push(histEntry('query', { ...meta, note: '回忆查询：' + args.open }))
+      // 防重（v5）：同 agent + 同会话 的重复阅读不新增记录，只追加时间到 times 数组
+      // （评分按 times 长度计一次；跨会话/跨 agent 阅读才新增记录）
+      const sameCtx = found.obj.history.filter(h => h.op === 'query' && h.session === meta.session && (meta.agent ? h.agent === meta.agent : true))
+      if (sameCtx.length) {
+        const rec = sameCtx[sameCtx.length - 1]
+        rec.times = Array.isArray(rec.times) ? rec.times : (rec.at ? [rec.at] : [])
+        rec.times.push(nowIso())
+      } else {
+        const entry = histEntry('query', { ...meta, note: '回忆查询：' + args.open })
+        entry.times = [nowIso()]
+        found.obj.history.push(entry)
+      }
+      found.obj.history = found.obj.history.slice(-50)  // 防膨胀：与 update/界面保存对齐
       await writeJson(found.path, found.obj)
       const c = cfg()
       const qn = args.queryHistory === undefined ? (c.queryHistoryN || 0) : (args.queryHistory === -1 ? 5 : Math.max(0, args.queryHistory))
@@ -2345,6 +2398,19 @@ export function apply(ctx) {
       titles = hits.map(h => h.title)
       const zones = hits.map(h => h.zone)
       parts.push('【记忆匹配标题】' + (titles.length ? titles.map((t, i) => t + (zones[i] === 'period' ? '（周期）' : '')).join('；') : '（无）'))
+      // P0-1：语义召回融合（enabled 时）——关键词未命中的语义近似条目单独列出并标注相似度
+      if (cfg().semanticSearch && cfg().semanticSearch.enabled) {
+        const semantic = await semanticHits(args.keyword)
+        const kwSet = new Set(titles)
+        const extra = []
+        for (const s of semantic) {
+          if (!kwSet.has(s.title) && !extra.some(x => x.title === s.title)) extra.push(s)
+        }
+        if (extra.length) {
+          for (const s of extra) { titles.push(s.title); zones.push('') }
+          parts.push('【语义匹配（关键词未命中）】' + extra.map(s => s.title + '（' + (s.zone === 'period' ? '周期·' : '') + '相似度 ' + s.sim.toFixed(2) + '）').join('；'))
+        }
+      }
     }
     await logQuery(meta.session, args.keyword || '', null)
     const baseText = parts.join('\n\n')
@@ -2371,7 +2437,7 @@ export function apply(ctx) {
     await logQuery(meta.session, '往时回忆 ' + (args.months || 0) + '月' + (args.days || 0) + '日', null)
     return {
       ok: true,
-      text: '【补充记忆·往时回忆 ' + (args.months || 0) + '月' + (args.days || 0) + '日→现在】共 ' + pg.total + ' 条，第 ' + pg.page + ' 页' + (pg.items.length ? '\n' + pg.items.map((x, i) => (pg.page - 1) * 10 + i + 1 + '. ' + x.title + '（最后操作 ' + isoStr(x.last) + '）').join('\n') + '\n（可用 memory_restore 捡回）' : ''),
+      text: '【补充记忆·往时回忆 ' + (args.months || 0) + '月' + (args.days || 0) + '日→现在】共 ' + pg.total + ' 条，第 ' + pg.page + ' 页' + (pg.items.length ? '\n' + pg.items.map((x, i) => (pg.page - 1) * 10 + i + 1 + '. ' + x.title + '（最后操作 ' + isoStr(x.last) + '）').join('\n') + '\n（可用 memory（cmd=restore）捡回）' : ''),
       data: { items: pg.items.map(x => ({ title: x.title, last: isoStr(x.last) })), page: pg.page, total: pg.total },
     }
   }
@@ -2562,6 +2628,7 @@ export function apply(ctx) {
       if (mergedVariant) lines.push('已合并日期变体：' + mergedVariant)
       if (forgets.length) lines.push('遗忘更新完成：' + forgets.map(f => '[' + f.index + '] → ' + f.archivePath).join('；'))
       await touchActive(meta, relOf(found.path), 'memory_update', forgets.map(f => ({ title: args.title, ref: f.archivePath })))
+      upsertEmbedding(relOf(found.path), args.title, obj.content, 'important').catch(() => {})  // P0-1：语义索引增量更新
       return { ok: true, text: lines.join('\n'), data: { title: args.title, deltaCount: delta.length, candidates: candidates.map(x => x.i), forgets } }
     }
     // ── kind=forget：主动遗忘（重要 → 补充，年/月同名合并）──
@@ -2581,6 +2648,7 @@ export function apply(ctx) {
         await tombstone(found.path, dst)
         await unmountFromActive(meta && meta.agent, args.title)
         await touchActive(meta, relOf(dst), 'memory_forget', [{ title: args.title, ref: relOf(found.path) }])
+        removeEmbedding(relOf(found.path)).catch(() => {})  // P0-1：语义索引移除已遗忘条目
         return { ok: true, text: '已遗忘并合并归档到补充：' + args.title + '（' + relOf(dst) + '）。' }
       }
       found.obj.location = 'archive'
@@ -2611,6 +2679,24 @@ export function apply(ctx) {
     if (similar.length) {
       linkWarnings += '\n\n【近似标题候选】' + similar.map(s => s.title + (s.shared >= 3 ? '（包含）' : '（共享' + s.shared + '词）')).join('；') + '\n（同一实体请 kind=update 更新；不同实体建议用更具体标题新建，将自动关联最强候选）'
     }
+    // P0-2：LLM 消歧判定（可选，默认关）——有近似候选时让模型判断"同一实体/不同实体/不确定"
+    // 模型判定 same → 直接建议 kind=update（不新建）；different/ambiguous/失败 → 走下方机械流程
+    if (similar.length) {
+      const dj = cfg().dedupJudge
+      if (dj && dj.enabled) {
+        const verdict = await dedupJudgeVerdict(title, String(args.content || ''), similar, meta)
+        if (verdict) {
+          if (verdict.relation === 'same' && verdict.target) {
+            return { ok: true, text: 'LLM 消歧判定：与「' + verdict.target + '」是同一实体' + (verdict.reason ? '（' + verdict.reason + '）' : '') + '\n建议用 kind=update title="' + verdict.target + '" 更新该记忆（含新内容），不要新建。' + linkWarnings, data: { duplicate: true, judge: 'same', target: verdict.target, existing: { title: verdict.target } } }
+          }
+          if (verdict.relation === 'different') {
+            linkWarnings += '\n\n【LLM 消歧判定】与候选不是同一实体' + (verdict.reason ? '：' + verdict.reason : '') + '，将新建并自动关联最强候选。'
+          } else {
+            linkWarnings += '\n\n【LLM 消歧判定】无法确定' + (verdict.reason ? '：' + verdict.reason : '') + '，请参考【近似标题候选】自行判断。'
+          }
+        }
+      }
+    }
     // 消歧关联：新建时若存在强近似（包含关系或共享≥2词），自动关联最强候选（"下次扫描查询时看到两者相关"）
     const strong = similar.filter(s => s.shared >= 2)
     if (strong.length) {
@@ -2622,6 +2708,7 @@ export function apply(ctx) {
     await writeJson(path, obj)
     await autoLink(obj, meta)
     await touchActive(meta, relOf(path), 'memory_add', undefined, [title])
+    upsertEmbedding(relOf(path), title, String(args.content || ''), 'important').catch(() => {})  // P0-1：语义索引增量
     return { ok: true, text: '已创建重要记忆：' + title + '（' + relOf(path) + '）' + linkWarnings, data: { title, path: relOf(path) } }
   })
   // 8. 捡回
@@ -2723,7 +2810,7 @@ export function apply(ctx) {
     const preview = files.slice(0, 50)
     return {
       ok: true,
-      text: '记忆隔离已触发：事件 ' + id + '，目标时间 ' + incident.targetTime + '（' + durationText + '），受影响 ' + files.length + ' 个文件（污染态已复制到 ' + relOf(mirror) + '）。\n' + preview.map(f => (f.createdAfter ? '[T之后新建] ' : '[受影响] ') + f.rel + '（最后操作 ' + f.lastOpAt + '）').join('\n') + (files.length > 50 ? '\n…共 ' + files.length + ' 个' : '') + '\n\n确认无误后调用 memory_isolation_restore id=' + id + ' 回滚；不需要则 memory_isolation_clear id=' + id + '。',
+      text: '记忆隔离已触发：事件 ' + id + '，目标时间 ' + incident.targetTime + '（' + durationText + '），受影响 ' + files.length + ' 个文件（污染态已复制到 ' + relOf(mirror) + '）。\n' + preview.map(f => (f.createdAfter ? '[T之后新建] ' : '[受影响] ') + f.rel + '（最后操作 ' + f.lastOpAt + '）').join('\n') + (files.length > 50 ? '\n…共 ' + files.length + ' 个' : '') + '\n\n确认无误后调用 memory（cmd=isolation_restore id=' + id + '）回滚；不需要则 memory（cmd=isolation_clear id=' + id + '）。',
       data: { id, targetTime: incident.targetTime, fileCount: files.length, files: incident.files },
     }
   }
@@ -2734,7 +2821,7 @@ export function apply(ctx) {
   // 12. 隔离回滚（阶段2）
   async function memCmdIsolationRestore(args, meta) {
     const inc = state.incidents.get(args.id)
-    if (!inc) return { ok: false, text: '未找到隔离事件：' + args.id + '（memory_status 可查看）' }
+    if (!inc) return { ok: false, text: '未找到隔离事件：' + args.id + '（memory（cmd=status）可查看）' }
     if (inc.restoredAt) return { ok: false, text: '该事件已回滚（' + inc.restoredAt + '）' }
     const tMs = parseIso(inc.targetTime)
     let restored = 0, quarantined = 0
@@ -2813,6 +2900,28 @@ export function apply(ctx) {
       c.indexScore = c.indexScore || {}
       for (const k of ['period', 'event', 'keyword', 'floor', 'threshold', 'maxRefs', 'scanMonths']) {
         if (patch.indexScore[k] !== undefined && patch.indexScore[k] !== c.indexScore[k]) { c.indexScore[k] = patch.indexScore[k]; changed = true }
+      }
+    }
+    // dedupJudge（LLM 写入消歧）子对象
+    if (patch.dedupJudge && typeof patch.dedupJudge === 'object') {
+      c.dedupJudge = c.dedupJudge || {}
+      const d = c.dedupJudge
+      const pd = patch.dedupJudge
+      if (pd.enabled !== undefined && pd.enabled !== d.enabled) { d.enabled = !!pd.enabled; changed = true }
+      if (pd.topCandidates !== undefined && pd.topCandidates !== d.topCandidates) { d.topCandidates = Number(pd.topCandidates); changed = true }
+      if (pd.model && typeof pd.model === 'object') {
+        d.model = d.model || { provider: '', model: '' }
+        if (pd.model.provider !== undefined && pd.model.provider !== d.model.provider) { d.model.provider = String(pd.model.provider); changed = true }
+        if (pd.model.model !== undefined && pd.model.model !== d.model.model) { d.model.model = String(pd.model.model); changed = true }
+      }
+    }
+    // semanticSearch（语义检索）子对象
+    if (patch.semanticSearch && typeof patch.semanticSearch === 'object') {
+      c.semanticSearch = c.semanticSearch || {}
+      const s = c.semanticSearch
+      const ps = patch.semanticSearch
+      for (const k of ['enabled', 'provider', 'model', 'topK', 'threshold', 'weight', 'indexEvents']) {
+        if (ps[k] !== undefined && ps[k] !== s[k]) { s[k] = ps[k]; changed = true }
       }
     }
     if (patch.root !== undefined && patch.root !== c.root) c.rootUserSet = true
@@ -4247,22 +4356,33 @@ function parseAdminJson(text) {
         if (!hits.some(h => h.title === t)) hits.push({ title: t, zone: 'no-model', ref: relOf(f.path) })
       }
     }
-    // 结合关键词分数排序（与关键词页一致：create×3 + query×1 + update×2 + forget/restore×1），
-    // 同级按标题字典序——高频使用/常更新的记忆排在前面
+    // 结合关键词分数排序（与关键词页一致：create×3 + query×times + update×2 + forget/restore×1），
+    // 同级按标题字典序——高频使用/常更新的记忆排在前面；
+    // v5：query 按 times 数组计次（同 agent+会话 防重合并），并加时间衰减（decayDays 天线性降到 floor，公式同活跃索引）
     const scored = []
+    const scDecay = Math.max(1, Number(cfg().decayDays) || 30)
+    const floor = Math.max(0.1, Number(cfg().indexScore && cfg().indexScore.floor) || 0.2)
+    const nowMs = Date.now()
     for (const h of hits) {
       let score = 0
+      let lastAt = 0
       if (h.zone === 'important') {
         const f = await findImportant(h.title)
         if (f && Array.isArray(f.obj.history)) {
           for (const hh of f.obj.history) {
             const op = hh && hh.op
             if (op === 'create') score += 3
-            else if (op === 'query') score += 1
+            else if (op === 'query') score += Array.isArray(hh.times) && hh.times.length ? hh.times.length : 1
             else if (op === 'update') score += 2
             else if (op === 'forget' || op === 'restore') score += 1
           }
         }
+        // 时间衰减基准：最近访问时间优先，其次最后操作时间
+        lastAt = parseIso(f && f.obj && f.obj.lastAccessedAt) || ((f && f.obj) ? lastOpTime(f.obj) : 0) || 0
+      }
+      if (lastAt) {
+        const ageDays = Math.max(0, (nowMs - lastAt) / 86400000)
+        score = score * Math.max(floor, 1 - ageDays / scDecay)
       }
       scored.push(Object.assign({}, h, { score }))
     }
@@ -4403,6 +4523,176 @@ function parseAdminJson(text) {
       }
     }
     return { ok: true, text: lines.join('\n'), data: { title, updated, parentCount: chain.length, modelJudged: !!verdict } }
+  }
+  // ── P0-2：写入消歧判定（dedupJudge）────────────────────────────────────
+  // 有近似候选时，让模型判断新记忆与候选是"同一实体 / 不同实体 / 不确定"。
+  // 复用 adminLlm + parseAdminJson 管线；模型失败/未配置 → 返回 null，调用方回退机械规则。
+  async function dedupJudgeVerdict(title, content, similar, meta) {
+    try {
+      const dj = cfg().dedupJudge || {}
+      const jm = (dj.model && dj.model.provider && dj.model.model) ? dj.model : (adminCfg().model || {})
+      if (!jm.provider || !jm.model) return null
+      const opts = {
+        provider: jm.provider,
+        model: jm.model,
+        contextTokens: adminCfg().contextTokens,
+        percent: adminCfg().summaryPercent,
+        outputTokens: Math.max(256, Number(adminCfg().outputTokens) || 1024),
+        langTokens: adminCfg().langTokens,
+        extraJson: adminCfg().extraJson,
+      }
+      const cands = similar.slice(0, Math.max(1, Number(dj.topCandidates) || 3))
+      const candText = []
+      for (const s of cands) {
+        const e = await findKeyword(s.title, scopeOwner(meta))
+        candText.push('· ' + (s.title || '') + '：' + (e && e.obj ? String(e.obj.content || '').slice(0, 200) : '（内容不可读）'))
+      }
+      const prompt = [
+        '你是「记忆管理员」的写入消歧判断器。用户正在写入一条新记忆，系统找到若干近似候选。判断新记忆与候选是「同一实体」还是「不同实体」。',
+        '只输出 JSON：{"relation": "same|different|ambiguous", "target": "同一实体时的候选标题（否则空字符串）", "action": "update|create|link|ask", "reason": "一句话说明"}',
+        '规则：1. 同一件事/同一主题的新进展 → relation=same（target 填最强候选标题，action=update）；2. 仅主题相近但确实是不同内容 → relation=different（action=create）；3. 信息不足无法判断 → relation=ambiguous（action=ask）；4. target 只能从下方【近似候选】里选，禁止编造。',
+        '',
+        '【新记忆标题】' + String(title || '').slice(0, 100),
+        '【新记忆内容】' + String(content || '').slice(0, 300),
+        '【近似候选】\n' + (candText.join('\n') || '（无）'),
+      ].join('\n')
+      const res = await adminLlm(prompt, opts, 2)
+      if (!res.ok || !res.text) return null
+      const parsed = parseAdminJson(res.text)
+      if (!parsed) return null
+      const relation = String(parsed.relation || '').trim()
+      if (!['same', 'different', 'ambiguous'].includes(relation)) return null
+      let target = String(parsed.target || '').trim()
+      if (relation === 'same' && target && !cands.some(c => c.title === target)) target = cands[0] ? cands[0].title : ''
+      return { relation, target, action: String(parsed.action || ''), reason: String(parsed.reason || '') }
+    } catch (e) { return null }
+  }
+  // ── P0-1：语义检索（本地 embedding，纯文件索引）────────────────────────
+  // 目标：解决"换说法搜不到"。可选接入本地 embedding（ollama / lmstudio），
+  // 向量存 _embeddings.json（记忆根下，走白名单写通道）；默认关、失败静默回退关键词检索。
+  function semanticCfg() { return cfg().semanticSearch || {} }
+  function embeddingIndexPath() { return p(root(), '_embeddings.json') }
+  async function readEmbeddingIndex() {
+    const idx = await readJson(embeddingIndexPath())
+    return (idx && Array.isArray(idx.items)) ? idx : { schemaVersion: 1, model: '', updatedAt: '', items: [] }
+  }
+  async function writeEmbeddingIndex(idx) {
+    idx.updatedAt = nowIso()
+    await writeJson(embeddingIndexPath(), idx)
+  }
+  // 调用本地 embedding 服务，返回向量数组；服务不可用/失败 → null（调用方回退）
+  async function embedTexts(texts) {
+    const sc = semanticCfg()
+    if (!sc.enabled || !sc.provider || !sc.model) return null
+    const list = (Array.isArray(texts) ? texts : [texts]).map(t => String(t || '').slice(0, 2000)).filter(Boolean)
+    if (!list.length) return null
+    try {
+      if (sc.provider === 'ollama') {
+        const res = await fetch('http://127.0.0.1:11434/api/embed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: sc.model, input: list }),
+        })
+        if (!res.ok) return null
+        const data = await res.json()
+        return Array.isArray(data && data.embeddings) ? data.embeddings : null
+      }
+      if (sc.provider === 'lmstudio') {
+        const res = await fetch('http://127.0.0.1:1234/v1/embeddings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: sc.model, input: list }),
+        })
+        if (!res.ok) return null
+        const data = await res.json()
+        return Array.isArray(data && data.data) ? data.data.map(x => x && x.embedding) : null
+      }
+    } catch (e) {}
+    return null
+  }
+  function cosineSim(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return 0
+    let dot = 0, na = 0, nb = 0
+    for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+    if (!na || !nb) return 0
+    return dot / (Math.sqrt(na) * Math.sqrt(nb))
+  }
+  // 索引单条（增量；embedding 失败静默——语义是增强能力，不影响主流程）
+  async function upsertEmbedding(ref, title, content, zone) {
+    try {
+      const sc = semanticCfg()
+      if (!sc.enabled) return
+      const vec = await embedTexts([String(title || '') + '\n' + String(content || '').slice(0, 1500)])
+      if (!vec || !vec[0]) return
+      const idx = await readEmbeddingIndex()
+      idx.model = sc.model
+      idx.items = idx.items.filter(x => x.ref !== ref)
+      idx.items.push({ ref, zone: zone || 'important', title: String(title || ''), vec: vec[0], updatedAt: nowIso() })
+      await writeEmbeddingIndex(idx)
+    } catch (e) {}
+  }
+  async function removeEmbedding(ref) {
+    try {
+      const idx = await readEmbeddingIndex()
+      const before = idx.items.length
+      idx.items = idx.items.filter(x => x.ref !== ref)
+      if (idx.items.length !== before) await writeEmbeddingIndex(idx)
+    } catch (e) {}
+  }
+  // 全量重建索引（重要 + 周期近 decayDays；分块 embed，失败即停）
+  async function rebuildEmbeddingIndex() {
+    try {
+      const sc = semanticCfg()
+      if (!sc.enabled || !sc.provider || !sc.model) return { ok: false, text: '语义检索未启用或未配置模型' }
+      const items = []
+      for (const f of await listFiles(importantDir(), false)) {
+        const o = await readJson(f.path)
+        if (!o || isTombstone(o)) continue
+        items.push({ ref: relOf(f.path), title: String(o.title || ''), content: String(o.content || ''), zone: 'important' })
+      }
+      const decay = Math.max(1, Number(cfg().decayDays) || 30)
+      const cutoff = Date.now() - decay * 86400000
+      for (const f of await listFiles(p(root(), '记忆累积', '周期记忆'), true)) {
+        const o = await readJson(f.path)
+        if (!o || isTombstone(o) || o.kind !== 'period') continue
+        const at = parseIso(o.createdAt) || parseIso(o.updatedAt) || 0
+        if (at < cutoff) continue
+        items.push({ ref: relOf(f.path), title: String(o.title || ''), content: String(o.content || ''), zone: 'period' })
+      }
+      const idx = { schemaVersion: 1, model: sc.model, updatedAt: nowIso(), items: [] }
+      for (let i = 0; i < items.length; i += 16) {
+        const batch = items.slice(i, i + 16)
+        const vecs = await embedTexts(batch.map(b => b.title + '\n' + b.content.slice(0, 1500)))
+        if (!vecs) return { ok: false, text: 'embedding 服务不可用，索引未完成（已完成 ' + idx.items.length + ' 条）' }
+        for (let j = 0; j < batch.length; j++) {
+          if (vecs[j]) idx.items.push({ ref: batch[j].ref, zone: batch[j].zone, title: batch[j].title, vec: vecs[j], updatedAt: nowIso() })
+        }
+      }
+      await writeEmbeddingIndex(idx)
+      return { ok: true, text: '语义索引已重建：' + idx.items.length + ' 条' }
+    } catch (e) { return { ok: false, text: '索引重建失败：' + (e && e.message || String(e)) } }
+  }
+  // 语义召回：query → topK 余弦命中（按相似度降序）
+  async function semanticHits(query) {
+    try {
+      const sc = semanticCfg()
+      if (!sc.enabled) return []
+      const idx = await readEmbeddingIndex()
+      if (!idx.items.length) {
+        // 懒建：后台全量重建，不阻塞当前查询
+        scheduleWork('semantic', () => rebuildEmbeddingIndex(), '语义索引重建').catch(() => {})
+        return []
+      }
+      const qv = await embedTexts([query])
+      if (!qv || !qv[0]) return []
+      const scored = []
+      for (const it of idx.items) {
+        const sim = cosineSim(qv[0], it.vec)
+        if (sim >= (Number(sc.threshold) || 0.35)) scored.push({ title: it.title, zone: it.zone, ref: it.ref, sim })
+      }
+      scored.sort((a, b) => b.sim - a.sim)
+      return scored.slice(0, Math.max(1, Number(sc.topK) || 8))
+    } catch (e) { return [] }
   }
   // 查询强化：完整上下文模式——命中材料 + 引用记忆深度展开（≤预算25%，越远截断）
   // + 触发前对话步填满剩余 → 一次模型判断（参考会话跟踪总结管线）
@@ -4557,7 +4847,7 @@ function parseAdminJson(text) {
       let create = 0, query = 0, update = 0, forget = 0, restore = 0
       for (const h of (e.obj.history || [])) {
         if (h.op === 'create') create++
-        else if (h.op === 'query') query++
+        else if (h.op === 'query') query += Array.isArray(h.times) && h.times.length ? h.times.length : 1
         else if (h.op === 'update') update++
         else if (h.op === 'forget-update') forget++
         else if (h.op === 'restore') restore++
@@ -4567,7 +4857,7 @@ function parseAdminJson(text) {
       scored.push({ title: e.obj.title, score, create, query, update, forget, restore, last: lastOpTime(e.obj), zone: e.zone, obj: e.obj })
     }
     scored.sort((a, b) => b.score - a.score || b.last - a.last)
-    const lines = ['【最近活动】检查 ' + checkN + ' 个，得分 = 创×3 + 查×1 + 更×' + weight + ' + 忘×1 + 捡×1']
+    const lines = ['【最近活动】检查 ' + checkN + ' 个，得分 = 创×3 + 查×次数 + 更×' + weight + ' + 忘×1 + 捡×1']
     for (const s of scored) {
       lines.push(s.title + ' | 得分 ' + s.score + ' (创' + s.create + ' 查' + s.query + ' 更' + s.update + ' 忘' + s.forget + ' 捡' + s.restore + ') | ' + isoStr(s.last))
     }
@@ -4606,7 +4896,7 @@ function parseAdminJson(text) {
     const created = parseIso(obj.createdAt) || nowMs
     const days = Math.max(0, (nowMs - created) / 86400000)
     const timeFactor = Math.max(0.2, 1 - days * 0.8 / 30) // 30 天线性降到 20%
-    const accessed = (obj.history || []).filter(h => h.op === 'query').length
+    const accessed = (obj.history || []).filter(h => h.op === 'query').reduce((n, h) => n + (Array.isArray(h.times) && h.times.length ? h.times.length : 1), 0)
     return accessed * 2 * timeFactor + timeFactor
   }
   // 找到最近 auto 周期文件（跳过 manual），返回 {path, obj} 或 null
@@ -4917,6 +5207,7 @@ function parseAdminJson(text) {
       sessionTurns: sessionItems.map(s => s.sid + '@' + s.turn),
     }
     await writeJson(path, obj)
+    upsertEmbedding(relOf(path), obj.title, obj.content, 'period').catch(() => {})  // P0-1：周期文件入语义索引
     // 周期记忆也算会话工作：更新当前活跃（记录指向周期记忆文件，可点击转跳查看周期内容）
     try {
       const periodOwner = (meta && (meta.ownerKey || meta.agent)) || 'preset:cordis'
@@ -5251,7 +5542,7 @@ function parseAdminJson(text) {
           approved = !!(outcome && (outcome.approved || outcome.result === 'approved'))
         }
       } catch (e) { approved = false }
-      if (!approved) return { ok: false, text: '周期总结需用户同意：请在设置界面手动触发，或用户批准后重试（本会话可用 memory_period_run useSessionModel=true 用主力模型执行）' }
+      if (!approved) return { ok: false, text: '周期总结需用户同意：请在设置界面手动触发，或用户批准后重试（本会话可用 memory cmd=period_run useSessionModel=true 用主力模型执行）' }
     }
     const res = await scheduleWork('period', () => runPeriodSummary(meta, force, useSessionModel, {
       scope: args && args.scope,

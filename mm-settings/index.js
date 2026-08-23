@@ -1110,15 +1110,23 @@ export function apply(ctx) {
         for (const f of await listFiles(p(r, '记忆累积', '重要'), false)) {
           const o = await readJson(f.path)
           if (!o || o.tombstone) continue
-          // 分数（与 memory_recent 一致）：创建×3 + 查询×1 + 更新×2 + 遗忘×1 + 捡回×1
+          // 分数（与 memory_recent / searchAllMemories 一致）：创建×3 + 查询×次数(times) + 更新×2 + 遗忘×1 + 捡回×1 + 时间衰减
           const hist = Array.isArray(o.history) ? o.history : []
           let score = 0
           for (const h of hist) {
             const op = h && h.op
             if (op === 'create') score += 3
-            else if (op === 'query') score += 1
+            else if (op === 'query') score += Array.isArray(h.times) && h.times.length ? h.times.length : 1
             else if (op === 'update') score += 2
             else if (op === 'forget' || op === 'restore') score += 1
+          }
+          // 时间衰减：最近访问/操作时间基准，decayDays 天线性降到 floor（与核心 searchAllMemories 一致）
+          const lastAt = parseIso(o.lastAccessedAt) || lastOpTime(o) || 0
+          if (lastAt) {
+            const ageDays = Math.max(0, (Date.now() - lastAt) / 86400000)
+            const scDecay = Math.max(1, Number(c && c.decayDays) || 30)
+            const floor = Math.max(0.1, Number(c && c.indexScore && c.indexScore.floor) || 0.2)
+            score = score * Math.max(floor, 1 - ageDays / scDecay)
           }
           out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score })
         }
