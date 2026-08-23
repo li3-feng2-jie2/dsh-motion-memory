@@ -370,6 +370,7 @@ export function apply(ctx) {
       summaryPercent: (m.summaryPercent !== undefined && m.summaryPercent !== null) ? m.summaryPercent : '',
       outputTokens: (m.outputTokens !== undefined && m.outputTokens !== null) ? m.outputTokens : '',
       concurrency: (m.concurrency !== undefined && m.concurrency !== null) ? m.concurrency : '',
+      delegateBlocks: !!(m.delegateBlocks),
       extraJson: (m.extraJson !== undefined && m.extraJson !== null) ? m.extraJson : null,
     }
   }
@@ -1326,9 +1327,17 @@ export function apply(ctx) {
           if (o && !o.tombstone) return { ok: true, title: o.title || pathArg, content: o.content || '（无内容）' }
           return { ok: false, text: '未找到文件：' + pathArg }
         }
-        // 会话@轮次：从事件目录反查
-        const m = String(ref || '').match(/^session-[\w-]+@(\d+)/)
+        // 会话@轮次（可带 :stepN）：优先读会话日志原始对话（readTurnRaw），让链接指向轮次时展示该轮次的对话信息
+        const m = String(ref || '').match(/^session-[\w-]+@(\d+)(?::step(\d+)(?:-(\d+))?)?/)
         if (m) {
+          const api = ctx.get('motionMemoryApi')
+          if (api && typeof api.readTurnRaw === 'function') {
+            try {
+              const raw = await api.readTurnRaw({ ref: String(ref) })
+              if (raw && raw.ok) return { ok: true, title: '轮次原文 · ' + ref, content: raw.content || '（无内容）' }
+            } catch (eRaw) {}
+          }
+          // 兜底：会话日志不可读时回退聚合文件轮次总结
           const sid = String(ref).split('@')[0]
           const turn = Number(m[1])
           for (const f of await listFiles(dailyBaseDirOf(r), true)) {

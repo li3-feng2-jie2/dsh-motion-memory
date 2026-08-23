@@ -3678,8 +3678,13 @@ function parseAdminJson(text) {
     const results = []
     const runOne = async (chunk, idx) => {
       const label = (sourceLabel || '') + '（块' + (idx + 1) + '/' + chunks.length + '）'
-      const res = await summarizeChunk(chunk, opts, meta, label)
-      if (!res.ok) return res
+      // 失败重派：块总结失败移除标记重新派单（重试 1 次，仍失败才记失败）
+      let res = await summarizeChunk(chunk, opts, meta, label)
+      if (!res.ok) {
+        const label2 = label + '（重试）'
+        res = await summarizeChunk(chunk, opts, meta, label2)
+        if (!res.ok) return res
+      }
       // 批2：工具格式降级——模型输出的工具调用在这里真实执行
       if (res.degraded && res.toolOut && res.toolOut.tool && res.toolOut.tool !== 'memory_noop') {
         const toolName = res.toolOut.tool
@@ -3728,8 +3733,8 @@ function parseAdminJson(text) {
     }
     // 块级委派（阶段3）：工具模型主池 worker 全忙 + 仍有剩余块 + 管理员有模型 + 开关允许 → 启动管理员委派池。
     // 委派块用管理员模型（同一 adminPrompt 契约，仅模型实例不同），块预算取 min(工具, 管理员) 保证两模型都能处理。
-    // 默认 delegateBlocks=false（仅工具模型，不外派）。
-    const delegateOn = !!(meta && meta.delegateBlocks) && (sourceLabel || '').indexOf('对话跟踪') === 0 && adminHasModel()
+    // 开关在工具模型高级设置（track/enhance/period 各自 delegateBlocks），默认关（仅工具模型，不外派）。
+    const delegateOn = !!(meta && meta.delegateBlocks) && adminHasModel()
     let adminOpts = null
     let adminConcurrency = 0
     if (delegateOn) {
@@ -3745,9 +3750,11 @@ function parseAdminJson(text) {
         extraJson: admC.extraJson,
       }
       if (adminOpts.provider && adminOpts.model) {
-        const adminBudget = blockBudget(adminOpts)
-        if (adminBudget < budget) { /* 块预算取 min：小于工具预算的块可委派 */ }
-        adminConcurrency = Math.max(1, Number(adminOpts.concurrency) || 1)
+        // 工具模型 == 管理员模型时委派无意义（同一个模型），直接不委派
+        const toolKey = String((opts && (opts.provider + '/' + opts.model)) || '')
+        const adminKey = String((adminOpts.provider + '/' + adminOpts.model) || '')
+        if (toolKey === adminKey) { adminOpts = null; adminConcurrency = 0 }
+        else adminConcurrency = Math.max(1, Number(adminOpts.concurrency) || 1)
       } else {
         adminOpts = null
         adminConcurrency = 0
@@ -3800,7 +3807,8 @@ function parseAdminJson(text) {
     if (failed.length) return { ok: false, error: '块总结失败：' + failed.map(f => f.error).join('；') }
     // 单块（无需归并）时直接以该块 parsed 作为最终 parsed
     if (results.length === 1 && results[0].parsed) lastParsed = results[0].parsed
-    // 中间结果拼接 → 若超预算再归并一级（最多 2 层）
+    // 中间结果拼接 → 归并层：每层总结输出尽量到达目标（默认 2k，受输出上限约束），
+    // 聚合后仍超目标 → 再拆再派（层数由内容量自然收敛：每层压缩约 5:1，50k→10k→2k 两层即可）
     let mids = results.map((r, i) => ({ id: 'm' + (i + 1), text: r.parsed.compress === false ? '' : (r.content || '') }))
     mids = mids.filter(m => m.text)
     let chain = []
@@ -3810,10 +3818,33 @@ function parseAdminJson(text) {
     if (!mids.length) {
       return { ok: true, content: '', chain, final: { content: '', sourceChain: chain, compress: false, parsed: lastParsed }, allSkipped: true }
     }
+    // 总结压缩目标：每层输出尽量到达 2k（目标 token），上限受输出限制（outCap）兜底
+    const outCapTok = Math.max(1024, Number(opts.outputTokens) || Number(adminCfg().outputTokens) || 2048)
+    const targetTokens = Math.min(2048, outCapTok)  // 目标 2k；输出上限小于 2k 时以上限为准
     let layer = 1
-    while ((mids.length > 1 || estimateTokens(mids[0].text, opts.langTokens) > budget) && layer < 2) {
-      layer++
+    const maxLayer = 12  // 安全上限（正常 3-4 层收敛；仅防极端情况死循环）
+    while (layer < maxLayer) {
+      const single = mids.length === 1
+      const curTokens = estimateTokens(mids[0].text, opts.langTokens)
+      // 已满足目标：单块且 ≤ 目标 token → 收敛停止
+      if (single && curTokens <= targetTokens) break
+      // 拆不动：单块但已 ≤ 预算（无法再拆）→ 若仍超目标则本层直接压缩该块一次
+      if (single) {
+        layer++
+        const label = (sourceLabel || '') + '（归并层' + layer + ' 单块压缩）'
+        const res = await summarizeChunk(mids, opts, meta, label)
+        if (!res.ok) return res
+        lastParsed = res.parsed
+        const c = res.parsed.compress === false ? '' : (res.parsed.content || res.text)
+        const ch = res.parsed.sourceChain && res.parsed.sourceChain.length ? res.parsed.sourceChain : res.itemIds
+        mids = c ? [{ id: 'm1', text: c }] : []
+        if (ch && ch.length) chain = ch
+        if (!mids.length) break
+        continue
+      }
+      // 多块：本层聚合压缩（每块输出尽量到达 2k，超目标则拆组继续）
       const groups = chunkItemsByBudget(mids, budget, opts.langTokens)
+      layer++
       const groupResults = []
       for (let g = 0; g < groups.length; g++) {
         const label = (sourceLabel || '') + '（归并层' + layer + ' 组' + (g + 1) + '）'
@@ -3829,7 +3860,6 @@ function parseAdminJson(text) {
       mids = groupResults.map((r, i) => ({ id: 'm' + (i + 1), text: r.parsed.compress === false ? '' : (r.content || '') })).filter(m => m.text)
       chain = []
       for (const r of groupResults) if (r.sourceChain && r.sourceChain.length) chain.push(...r.sourceChain)
-      if (layer > 8) break
     }
     const finalContent = mids.length ? mids[0].text : ''
     return { ok: true, content: finalContent, chain, final: { content: finalContent, sourceChain: chain, layer, parsed: lastParsed } }
@@ -3894,10 +3924,10 @@ function parseAdminJson(text) {
   function trackCfg() {
     const c = cfg()
     if (!c.admin) c.admin = {}
-    if (!c.admin.track) c.admin.track = { enabled: false, interval: 5, economize: 'none', truncK: 2, startTurn: 0, refPrecision: 'turn', injectActive: false, delegateBlocks: false }
+    if (!c.admin.track) c.admin.track = { enabled: false, interval: 5, economize: 'none', truncK: 2, startTurn: 0, refPrecision: 'turn', injectActive: false }
     if (!c.admin.track.refPrecision) c.admin.track.refPrecision = 'turn'
-    // 块级委派默认仅工具模型（用户确认：默认不允许外派到记忆管理员）；开启后主池占满+剩余块才委派
-    if (c.admin.track.delegateBlocks === undefined || c.admin.track.delegateBlocks === null) c.admin.track.delegateBlocks = false
+    // 块级委派开关迁到模型结构体（track.model.delegateBlocks，模型高级设置），默认关（仅工具模型不外派）
+    if (c.admin.track.model && c.admin.track.model.delegateBlocks === undefined) c.admin.track.model.delegateBlocks = false
     return c.admin.track
   }
   // 切段规则：含工具调用的 step 独立成段；连续纯文本 step 合并；末尾无工具的报告段独立
@@ -4221,8 +4251,8 @@ function parseAdminJson(text) {
         items.unshift({ id: sid + '@' + turn + ':active', text: '【' + (mode === 'at-time' ? '当时' : '当前') + '活跃记忆】\n' + activeSummary + '\n\n请以上述活跃记忆的态度总结下面的轮次内容。' })
       }
     }
-    // 压缩引擎（meta 携带 refPrecision，summarizeChunk 据此决定提示词精度；delegateBlocks 控制块级委派）
-    const res = await chunkCompress(items, opts, Object.assign({}, meta, { refPrecision, delegateBlocks: !!tc.delegateBlocks }), '对话跟踪 会话 ' + sid + ' 轮次 ' + turn)
+    // 压缩引擎（meta 携带 refPrecision，summarizeChunk 据此决定提示词精度；delegateBlocks 控制块级委派，来自工具模型结构体）
+    const res = await chunkCompress(items, opts, Object.assign({}, meta, { refPrecision, delegateBlocks: !!(tc.model && tc.model.delegateBlocks) }), '对话跟踪 会话 ' + sid + ' 轮次 ' + turn)
     if (!res.ok) {
       // 总结失败 → 走无模型整理流程（用户要求：失败也在轮次页显示，标注"模型总结失败"）
       await trackNoModelRecord(sid, turn, Object.assign({}, meta, { failNote: res.error || '模型总结失败' }))
@@ -5506,7 +5536,7 @@ function parseAdminJson(text) {
     if (adminCtx) pre.push({ id: 'admin-context', text: adminCtx })
     if (activeCtx) pre.push({ id: 'active-context', text: activeCtx })
     const base = pre.length ? pre.concat(eventItems, sessItems) : eventItems.concat(sessItems)
-    const res = await chunkCompress(base, opts, meta, '周期总结 ' + ymdPath(new Date()) + '（' + scopeLabelOf(scope, scopeDetail) + '）')
+    const res = await chunkCompress(base, opts, Object.assign({}, meta, { delegateBlocks: !!(pc.model && pc.model.delegateBlocks) }), '周期总结 ' + ymdPath(new Date()) + '（' + scopeLabelOf(scope, scopeDetail) + '）')
     if (!res.ok) return { ok: false, text: '周期总结失败：' + res.error }
     // 写周期文件（auto 或 manual）
     const d = new Date()
@@ -5970,6 +6000,19 @@ function parseAdminJson(text) {
     } catch (e) {}
     return ''
   }
+  // 插件所在目录（motion-memory.js 的上级目录；非 git 安装也适用）
+  function pluginDir() {
+    try {
+      let p = ''
+      try { p = (typeof import.meta !== 'undefined' && import.meta.url) ? import.meta.url : '' } catch (e) {}
+      if (!p && typeof __filename !== 'undefined') p = __filename
+      if (!p) return ''
+      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7)).replace(/\//g, '\\')
+      const idx = String(p).toLowerCase().indexOf('motion-memory.js')
+      if (idx >= 0) return String(p).slice(0, idx).replace(/\\+$/, '')
+    } catch (e) {}
+    return ''
+  }
   function execGit(args, opts) {
     return new Promise((resolve) => {
       try {
@@ -5994,32 +6037,69 @@ function parseAdminJson(text) {
       projectUrl: (pkg && pkg.repository && pkg.repository.url) ? String(pkg.repository.url).replace(/^git\+/, '').replace(/\.git$/, '') : UPDATE_PROJECT_URL,
     }
   }
-  // 检查更新（git fetch + 对比落后提交数）
+  // 版本号比较（语义化 vX.Y.Z）：a>b 返回 1，相等 0，a<b 返回 -1
+  function compareVersions(a, b) {
+    const pa = String(a || '0').replace(/^v/i, '').split('.').map(n => Number(n) || 0)
+    const pb = String(b || '0').replace(/^v/i, '').split('.').map(n => Number(n) || 0)
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || 0, y = pb[i] || 0
+      if (x > y) return 1
+      if (x < y) return -1
+    }
+    return 0
+  }
+  // 检查更新（git 分支：fetch 对比提交；非 git 分支：版本号对比）
   async function checkUpdate() {
     const dir = pluginGitDir()
-    if (!dir) return { ok: false, text: '未检测到 git 安装目录（手动复制安装无法自动更新，请从发布仓库重新下载）：' + UPDATE_PROJECT_URL, info: null, projectUrl: UPDATE_PROJECT_URL }
-    const info = await pluginVersionInfo()
-    const fet = await execGit(['fetch', 'origin'], { cwd: dir, timeout: 30000 })
-    if (!fet.ok) return { ok: false, text: '检查更新失败：' + fet.error + '（请确认 git 与网络可用）\n项目地址：' + info.projectUrl, info, projectUrl: info.projectUrl }
-    const behind = await execGit(['rev-list', '--count', 'HEAD..@{u}'], { cwd: dir })
-    const latest = await execGit(['log', '-1', '--format=%h %s', '@{u}'], { cwd: dir })
-    const behindN = behind.ok ? (Number(behind.out) || 0) : 0
+    if (dir) {
+      const info = await pluginVersionInfo()
+      const fet = await execGit(['fetch', 'origin'], { cwd: dir, timeout: 30000 })
+      if (!fet.ok) return { ok: false, text: '检查更新失败：' + fet.error + '（请确认 git 与网络可用）\n项目地址：' + info.projectUrl, info, projectUrl: info.projectUrl }
+      const behind = await execGit(['rev-list', '--count', 'HEAD..@{u}'], { cwd: dir })
+      const latest = await execGit(['log', '-1', '--format=%h %s', '@{u}'], { cwd: dir })
+      const behindN = behind.ok ? (Number(behind.out) || 0) : 0
+      return {
+        ok: true, hasUpdate: behindN > 0, behind: behindN, mode: 'git',
+        info: Object.assign({}, info, { latest: latest.ok ? latest.out : '' }),
+        projectUrl: info.projectUrl,
+        text: '版本 v' + info.version + (info.tag ? '（' + info.tag + '）' : '') + ' · 提交 ' + info.head +
+          (behindN > 0 ? '\n发现新版本（落后 ' + behindN + ' 个提交，最新：' + (latest.ok ? latest.out : '?') + '）\n点击"更新"拉取（更新后需重启 DSH 生效）' : '\n已是最新版本'),
+      }
+    }
+    // 非 git 分支：版本号判断（手动复制安装）。远端版本 = GitHub raw 的 package.json version
+    const localPkg = readJsonFileNative(p(pluginDir(), 'package.json'))
+    const localVer = (localPkg && localPkg.version) || '0.1.0'
+    let remoteVer = ''
+    let remoteUrl = ''
+    try {
+      const r = await fetch('https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/package.json', { signal: AbortSignal.timeout(15000) })
+      if (r && r.ok) {
+        const rj = await r.json()
+        remoteVer = (rj && rj.version) || ''
+        remoteUrl = (rj && rj.repository && rj.repository.url) ? String(rj.repository.url).replace(/^git\+/, '').replace(/\.git$/, '') : UPDATE_PROJECT_URL
+      }
+    } catch (e) { return { ok: false, text: '检查更新失败：' + ((e && e.message) || e) + '（请确认网络可用）\n项目地址：' + UPDATE_PROJECT_URL, info: null, projectUrl: UPDATE_PROJECT_URL, mode: 'version' } }
+    if (!remoteVer) return { ok: false, text: '检查更新失败：无法获取远端版本号\n项目地址：' + UPDATE_PROJECT_URL, info: null, projectUrl: UPDATE_PROJECT_URL, mode: 'version' }
+    const cmp = compareVersions(remoteVer, localVer)
     return {
-      ok: true, hasUpdate: behindN > 0, behind: behindN,
-      info: Object.assign({}, info, { latest: latest.ok ? latest.out : '' }),
-      projectUrl: info.projectUrl,
-      text: '版本 v' + info.version + (info.tag ? '（' + info.tag + '）' : '') + ' · 提交 ' + info.head +
-        (behindN > 0 ? '\n发现新版本（落后 ' + behindN + ' 个提交，最新：' + (latest.ok ? latest.out : '?') + '）\n点击"更新"拉取（更新后需重启 DSH 生效）' : '\n已是最新版本'),
+      ok: true, hasUpdate: cmp > 0, behind: cmp > 0 ? 1 : 0, mode: 'version',
+      info: { git: false, version: localVer, remoteVersion: remoteVer, projectUrl: remoteUrl || UPDATE_PROJECT_URL },
+      projectUrl: remoteUrl || UPDATE_PROJECT_URL,
+      text: '本地版本 v' + localVer + ' · 远端版本 v' + remoteVer +
+        (cmp > 0 ? '\n发现新版本（远端 ' + remoteVer + ' > 本地 ' + localVer + '）\n点击"更新"下载最新文件（更新后需重启 DSH 生效）' : '\n已是最新版本'),
     }
   }
-  // 执行更新（git pull --ff-only，更新文件后需重启生效）
+  // 执行更新（git 分支：pull --ff-only；非 git 分支：版本号对比，仅提示手动下载——无法安全覆盖本地文件）
   async function applyUpdate() {
     const dir = pluginGitDir()
-    if (!dir) return { ok: false, text: '未检测到 git 安装目录，无法自动更新（请从发布仓库重新下载）' }
-    const pull = await execGit(['pull', '--ff-only'], { cwd: dir, timeout: 60000 })
-    if (!pull.ok) return { ok: false, text: '更新失败：' + pull.error + '（请先处理本地未提交改动）' }
-    const head = await execGit(['rev-parse', '--short', 'HEAD'], { cwd: dir })
-    return { ok: true, text: '已更新（提交 ' + (head.ok ? head.out : '?') + '），请重启 DSH 生效。\n' + pull.out, data: { head: head.ok ? head.out : '' } }
+    if (dir) {
+      const pull = await execGit(['pull', '--ff-only'], { cwd: dir, timeout: 60000 })
+      if (!pull.ok) return { ok: false, text: '更新失败：' + pull.error + '（请先处理本地未提交改动）' }
+      const head = await execGit(['rev-parse', '--short', 'HEAD'], { cwd: dir })
+      return { ok: true, text: '已更新（提交 ' + (head.ok ? head.out : '?') + '），请重启 DSH 生效。\n' + pull.out, data: { head: head.ok ? head.out : '' } }
+    }
+    // 非 git：版本号已对比有新版 → 提示手动下载（不自动覆盖，避免破坏手动安装的本地改动）
+    return { ok: false, text: '手动复制安装无法自动更新（避免覆盖你的本地文件）。\n请从发布仓库下载最新源码替换：' + UPDATE_PROJECT_URL + '\n（或用 git clone 安装以获得自动更新）' }
   }
   // memory cmd=update（action=check 检查 / apply 更新）
   async function memCmdUpdate(args, meta) {

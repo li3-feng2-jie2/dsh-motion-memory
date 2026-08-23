@@ -286,6 +286,13 @@ window.__ModuleLoader__.load({
           Row('总结占用百分比（%）', mkNum('summaryPercent', 'num'), '留空跟随全局（' + (g.summaryPercent || 50) + '%）'),
           Row('输出上限（k token）', mkNum('outputTokens', 'k'), '留空跟随全局（' + fmtK(g.outputTokens || 1024) + '）'),
           Row('并发（块级并行）', mkNum('concurrency', 'num'), '0=串行；N=同时 N 个块并行；留空跟随全局'),
+          (function () {
+            // 允许向记忆管理员委派：工具模型 == 管理员模型（global）时不显示（同一个模型，委派无意义）
+            var toolKey = String((value.provider || '') + '/' + (value.model || ''))
+            var gKey = String((g.provider || '') + '/' + (g.model || ''))
+            if (toolKey && toolKey === gKey) return null
+            return CheckRow('允许向记忆管理员委派', !!(value.delegateBlocks), function (e) { setF('delegateBlocks', e.target.checked) }, '开=工具模型 worker 占满、还有剩余块/任务时，空闲的记忆管理员模型接单协作（同一提示词契约，片段标记来源模型；管理员未配置模型则不委派）。关（默认）=仅本工具模型自己做')
+          })(),
           CheckRow('自定义 JSON（覆盖全局）', hasJson, function (e) {
             if (e.target.checked) { if (!hasJson) setExtraJson({ temperature: 0.3 }) }
             else setExtraJson(null)
@@ -599,7 +606,6 @@ window.__ModuleLoader__.load({
           Row('模型配置', React.createElement(ModelConfigBlock, { value: adm.trackModel || {}, global: globalModel, providers: providers, onChange: function (v) { setA('trackModel', v) } }), '留空字段继承全局管理员模型参数；选「无模型」则不调用模型：每轮结束把该轮用户消息以 [用户消息](会话@轮次) 引用形式累积到无模型记忆整理区（每会话一个文件，标题=会话id，逐行追加），保持原始指向，可经周期总结/模型转正'),
           Row('触发间隔', Num({ value: adm.trackInterval === undefined || adm.trackInterval === null ? 0 : adm.trackInterval, onChange: function (e) { setA('trackInterval', Math.max(0, Number(e.target.value) || 0)) } }), '0=每轮总结；N=每 N 轮总结一次。首次总结时把间隔记录到该会话的记忆文件里，之后该会话按自己的记录判断（配置改了会新增一条记录），跨重启不丢'),
           Row('总结队列并发', Num({ value: adm.summaryConcurrency === undefined || adm.summaryConcurrency === null ? 0 : adm.summaryConcurrency, min: 0, onChange: function (e) { setA('summaryConcurrency', Math.max(0, Number(e.target.value) || 0)) } }), '0=按顺序执行（默认，防本地小模型排队乱序）；N=同时运行 N 个轮次总结任务（模型较强时可并行）。多窗口同时触发时任务排队等待，不会丢失。'),
-          CheckRow('块级委派给记忆管理员', !!(adm.trackDelegateBlocks), function (e) { setA('trackDelegateBlocks', e.target.checked) }, '默认关=仅用工具模型（不外派）。开启后：工具模型 worker 占满且仍有剩余块时，把块委派给记忆管理员模型总结（同一提示词契约，片段标记来源模型；管理员未配置模型则不委派）。'),
           CheckRow('修改当前活跃后通知注入', (adm.trackInjectActive === undefined ? false : !!adm.trackInjectActive), function (e) { setA('trackInjectActive', e.target.checked) }, '是：每轮新对话尝试注入当前活跃新变化（摘要，仅此一项）；否（默认）：不注入，模型需要时自行 memory_query，节约输入 token'),
           Row('摘要注入长度（字符）', Num({ value: cfg.summaryInjectChars || 300, onChange: function (e) { set('summaryInjectChars', Math.max(20, Number(e.target.value) || 300)) } }), '对话跟踪工具更新活跃摘要后，注入其他会话的摘要截取字符数（默认 300，中文语义完整；设小可省 token）'),
           CheckRow('精确到步骤（步骤指向）', adm.trackRefPrecision === 'step', function (e) { setA('trackRefPrecision', e.target.checked ? 'step' : 'turn') }, '勾选 = 溯源准确到 会话@轮次:stepN（高精度，适合强模型）；不勾 = 整轮指向 会话@轮次（默认，适合一般模型）'),
