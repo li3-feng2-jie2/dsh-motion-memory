@@ -775,6 +775,8 @@ function MemoryView(props) {
     // 清掉编辑/补充残留，避免切页后数据不刷新（"切换页面无效"）
     if (editState) setEditState(null)
     if (gapEdit) setGapEdit(null)
+    // 切页签时关闭所有超链接弹窗（弹窗残留会遮挡/干扰新页面）
+    if (popupV && popupV.length) popupClear()
     setTabRaw(id)
   }
   var turns = React.useState(null)
