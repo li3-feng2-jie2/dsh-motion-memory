@@ -18,6 +18,8 @@ import { createHash } from 'node:crypto'
 // 固定位置不随工作区/会话漂移；记忆文件仍走 ctx.fs（沙箱）。
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { zstdDecompressSync } from 'node:zlib'
+// 版本更新检查（v0.1.x）：git 绑定安装时用 git fetch/pull 检查并更新
+import { execFile as execFileCb } from 'node:child_process'
 // import { installAdmin } from './motion-admin.js'
 // 周期总结模块（拆分）：素材档位纯逻辑
 import { SCOPE_DEFAULTS, scopeLabelOf } from './motion-memory-modules/period-scope.mjs'
@@ -2090,7 +2092,7 @@ export function apply(ctx) {
   }
   // 记忆综合入口（低频/管理员/隔离/手动）
   tool('memory', '运动记忆·综合入口：status=状态；config=配置读写；notify=变更通知开关；recent=最近活动；history=历史记录；recall_past=往时回忆；restore=捡回；track_run=对话跟踪手动；period_run=周期手动（普通会话触发需用户确认）；period_status=周期状态；enhance=查询强化；admin_view=查看失败记录；admin_summarize=管理员压缩；isolation=隔离；isolation_restore=隔离回滚；isolation_clear=解除隔离。记忆写入后当前活跃的 keywords 会同步整理（移除过时/重复词、加入新主题）。', {
-    cmd: { type: 'string', enum: ['status', 'config', 'notify', 'recent', 'history', 'recall_past', 'restore', 'track_run', 'period_run', 'period_status', 'enhance', 'admin_view', 'admin_summarize', 'isolation', 'isolation_restore', 'isolation_clear'], description: '子命令' },
+    cmd: { type: 'string', enum: ['status', 'config', 'notify', 'recent', 'history', 'recall_past', 'restore', 'track_run', 'period_run', 'period_status', 'enhance', 'admin_view', 'admin_summarize', 'isolation', 'isolation_restore', 'isolation_clear', 'update'], description: '子命令' },
     action: { type: 'string', description: 'cmd=notify: on/off/status' },
     title: { type: 'string', description: 'cmd=history/restore 等：标题' },
     keyword: { type: 'string', description: '通用关键词/查询词' },
@@ -2130,6 +2132,7 @@ export function apply(ctx) {
       case 'isolation': return memCmdIsolation(args, meta)
       case 'isolation_restore': return memCmdIsolationRestore(args, meta)
       case 'isolation_clear': return memCmdIsolationClear(args, meta)
+      case 'update': return memCmdUpdate(args, meta)
       default: return { ok: false, text: '（memory cmd=' + args.cmd + ' 待迁移）' }
     }
   })
@@ -5577,6 +5580,86 @@ function parseAdminJson(text) {
     return { ok: true, text: lines.join('\n'), data: { enabled: pc.enabled, last: last ? isoStr(last.t) : null, due, pending, scope: pc.scope || 1, scopeDetail: pc.scopeDetail || SCOPE_DEFAULTS[pc.scope || 1] } }
   }
 
+  // ── 版本与更新（v0.1.x：git 绑定安装的自动更新检查）────────────────────
+  // 发布版为 git 仓库（motion-memory-dist 工作副本），用 git fetch 对比远端，
+  // 有更新可执行 git pull（重启 DSH 生效）；手动复制安装则提示重新下载。
+  // 定位插件文件所在目录（import.meta.url → 向上找 .git）
+  function pluginGitDir() {
+    try {
+      let p = ''
+      try { p = (typeof import.meta !== 'undefined' && import.meta.url) ? import.meta.url : '' } catch (e) {}
+      if (!p && typeof __filename !== 'undefined') p = __filename
+      if (!p) return ''
+      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7)).replace(/\//g, '\\')
+      p = String(p).replace(/\\/g, '\\')
+      let cur = p
+      const idx = cur.toLowerCase().indexOf('motion-memory.js')
+      if (idx >= 0) cur = cur.slice(0, idx)
+      for (let i = 0; i < 8; i++) {
+        if (existsSync(cur + '.git')) return cur.replace(/\\+$/, '')
+        const last = cur.lastIndexOf('\\')
+        if (last <= 0) break
+        cur = cur.slice(0, last)
+      }
+    } catch (e) {}
+    return ''
+  }
+  function execGit(args, opts) {
+    return new Promise((resolve) => {
+      try {
+        execFileCb('git', args, Object.assign({ timeout: 20000, windowsHide: true, encoding: 'utf8' }, opts || {}), (err, stdout, stderr) => {
+          if (err) resolve({ ok: false, error: String(stderr || err.message || '').trim() || String(err.message || '') })
+          else resolve({ ok: true, out: String(stdout || '').trim() })
+        })
+      } catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }) }
+    })
+  }
+  async function pluginVersionInfo() {
+    const dir = pluginGitDir()
+    if (!dir) return { git: false, version: '0.1.0' }
+    const tag = await execGit(['describe', '--tags', '--always'], { cwd: dir })
+    const head = await execGit(['rev-parse', '--short', 'HEAD'], { cwd: dir })
+    const remote = await execGit(['remote', 'get-url', 'origin'], { cwd: dir })
+    const pkg = readJsonFileNative(p(dir, 'package.json'))
+    return {
+      git: true, dir, version: (pkg && pkg.version) || '0.1.0',
+      tag: tag.ok ? tag.out : '', head: head.ok ? head.out : '',
+      remote: remote.ok ? remote.out : '',
+    }
+  }
+  // 检查更新（git fetch + 对比落后提交数）
+  async function checkUpdate() {
+    const dir = pluginGitDir()
+    if (!dir) return { ok: false, text: '未检测到 git 安装目录（手动复制安装无法自动更新，请从发布仓库重新下载）', info: null }
+    const info = await pluginVersionInfo()
+    const fet = await execGit(['fetch', 'origin'], { cwd: dir, timeout: 30000 })
+    if (!fet.ok) return { ok: false, text: '检查更新失败：' + fet.error + '（请确认 git 与网络可用）', info }
+    const behind = await execGit(['rev-list', '--count', 'HEAD..@{u}'], { cwd: dir })
+    const latest = await execGit(['log', '-1', '--format=%h %s', '@{u}'], { cwd: dir })
+    const behindN = behind.ok ? (Number(behind.out) || 0) : 0
+    return {
+      ok: true, hasUpdate: behindN > 0, behind: behindN,
+      info: Object.assign({}, info, { latest: latest.ok ? latest.out : '' }),
+      text: '版本 v' + info.version + (info.tag ? '（' + info.tag + '）' : '') + ' · 提交 ' + info.head +
+        (behindN > 0 ? '\n发现新版本（落后 ' + behindN + ' 个提交，最新：' + (latest.ok ? latest.out : '?') + '）\n执行 memory cmd=update action=apply 更新（更新后需重启 DSH 生效）' : '\n已是最新版本'),
+    }
+  }
+  // 执行更新（git pull --ff-only，更新文件后需重启生效）
+  async function applyUpdate() {
+    const dir = pluginGitDir()
+    if (!dir) return { ok: false, text: '未检测到 git 安装目录，无法自动更新（请从发布仓库重新下载）' }
+    const pull = await execGit(['pull', '--ff-only'], { cwd: dir, timeout: 60000 })
+    if (!pull.ok) return { ok: false, text: '更新失败：' + pull.error + '（请先处理本地未提交改动）' }
+    const head = await execGit(['rev-parse', '--short', 'HEAD'], { cwd: dir })
+    return { ok: true, text: '已更新（提交 ' + (head.ok ? head.out : '?') + '），请重启 DSH 生效。\n' + pull.out, data: { head: head.ok ? head.out : '' } }
+  }
+  // memory cmd=update（action=check 检查 / apply 更新）
+  async function memCmdUpdate(args, meta) {
+    const action = (args && args.action) || 'check'
+    if (action === 'apply') return applyUpdate()
+    return checkUpdate()
+  }
+
   // ═════════════════════════════════════════════════════════════════════
   // 配置界面 RPC（host 半，供 settings.section client 页面调用）
   // ═════════════════════════════════════════════════════════════════════
@@ -5585,6 +5668,15 @@ function parseAdminJson(text) {
   const harnessApi = ctx.get('harness')
   if (harnessApi) {
     // 读完整配置（含 admin 全部字段，未配置时给默认值）
+    // 版本与更新（界面按钮：检查 / 执行更新）
+    harnessApi.handle('motion-memory/update-check', async () => {
+      await ready().catch(() => {})
+      return checkUpdate()
+    })
+    harnessApi.handle('motion-memory/update', async () => {
+      await ready().catch(() => {})
+      return applyUpdate()
+    })
     harnessApi.handle('motion-memory/config', async () => {
       await ready().catch(() => {})
       const c = cfg()
@@ -6101,6 +6193,15 @@ function parseAdminJson(text) {
   // 后直接 ctx.motionMemoryApi.turnRereview() —— 进程内函数直调，
   // 不走"写请求文件 → 定时器 → 轮询结果文件"的文件接力链路。
   ctx.provide('motionMemoryApi', {
+    // 版本检查 / 执行更新（git 绑定安装；供 mm-settings 界面按钮调用）
+    async updateCheck() {
+      await ready().catch(() => {})
+      return checkUpdate()
+    },
+    async updateApply() {
+      await ready().catch(() => {})
+      return applyUpdate()
+    },
     // 轮次重新总结（同步直调模型，当场等返回；mode=current/at-time 双模式）
     async turnRereview(args) {
       await ready().catch(() => {})

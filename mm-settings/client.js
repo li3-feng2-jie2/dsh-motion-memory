@@ -342,6 +342,13 @@ window.__ModuleLoader__.load({
       var state7 = React.useState([])
       var providers = state7[0]
       var setProviders = state7[1]
+      // 版本与更新：检查结果 + 更新执行中
+      var stateU = React.useState(null)
+      var updateInfo = stateU[0]
+      var setUpdateInfo = stateU[1]
+      var stateU2 = React.useState(false)
+      var updateBusy = stateU2[0]
+      var setUpdateBusy = stateU2[1]
       var state8 = React.useState('')
       var countdown = state8[0]
       var setCountdown = state8[1]
@@ -699,6 +706,21 @@ window.__ModuleLoader__.load({
       // ── 状态与诊断 ────────────────────────────────────────────
       sections.push(Section('状态与诊断',
         React.createElement('div', { style: msgStyle }, '根目录：' + (stats && stats.root || '') + '\n配置路径：' + (diag && diag.cfgPath || '') + '\n本日新增：重要 ' + ((stats && stats.today && stats.today.important) || 0) + ' 条 · 事件 ' + ((stats && stats.today && stats.today.events) || 0) + ' 条' + '\n归档时间内（' + ((stats && stats.days) || 30) + ' 天）：重要 ' + ((stats && stats.within && stats.within.important) || 0) + ' 条 · 周期 ' + ((stats && stats.within && stats.within.period) || 0) + ' 条 · 事件 ' + ((stats && stats.within && stats.within.events) || 0) + ' 条' + '\n全部统计：重要 ' + (stats && stats.important || 0) + ' 条 · 周期 ' + (stats && stats.period || 0) + ' 条 · 补充 ' + (stats && stats.archive || 0) + ' 条 · 事件 ' + (stats && stats.events || 0) + ' 条' + ((stats && stats.noModel > 0) ? '\n无模型记忆 ' + stats.noModel + ' 条' : '')),
+      ))
+      sections.push(Section('版本与更新',
+        React.createElement('div', { style: msgStyle }, (updateInfo && updateInfo.text) ? updateInfo.text : ('当前版本：' + ((updateInfo && updateInfo.info && updateInfo.info.version) || '?') + (updateInfo && updateInfo.info && updateInfo.info.tag ? '（' + updateInfo.info.tag + '）' : '') + '\n点击"检查更新"查看是否有新版本')),
+        React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' } },
+          Button({ disabled: busy || updateBusy, onClick: function () {
+            setBusy(true)
+            callHost('mm-update-check', {}).then(function (r) { setUpdateInfo(r || { text: '（无返回）' }) }).catch(function (e) { setUpdateInfo({ text: '检查失败：' + String((e && e.message) || e) }) }).finally(function () { setBusy(false) })
+          } }, '检查更新'),
+          Button({ disabled: busy || updateBusy || !(updateInfo && updateInfo.hasUpdate), onClick: function () {
+            if (!window.confirm('确认更新插件到最新版本？更新后需重启 DSH 生效。')) return
+            setUpdateBusy(true)
+            callHost('mm-update', {}).then(function (r) { setUpdateInfo(r || { text: '（无返回）' }) }).catch(function (e) { setUpdateInfo({ text: '更新失败：' + String((e && e.message) || e) }) }).finally(function () { setUpdateBusy(false) })
+          } }, '更新'),
+        ),
+        React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6, whiteSpace: 'pre-wrap' } }, '说明：git 安装（推荐）可检查并拉取更新，重启 DSH 生效；手动复制安装无法自动更新，请从发布仓库重新下载。'),
       ))
 
       return React.createElement('div', { style: { maxWidth: 640 } },

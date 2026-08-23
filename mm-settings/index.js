@@ -1349,6 +1349,16 @@ export function apply(ctx) {
         }
         return { ok: false, text: '无法解析引用：' + (ref || pathArg) }
       }
+      case 'mm-update-check': {
+        const api = ctx.get('motionMemoryApi')
+        if (!api || typeof api.updateCheck !== 'function') return { ok: false, text: 'motionMemoryApi 服务不可用' }
+        return api.updateCheck()
+      }
+      case 'mm-update': {
+        const api = ctx.get('motionMemoryApi')
+        if (!api || typeof api.updateApply !== 'function') return { ok: false, text: 'motionMemoryApi 服务不可用' }
+        return api.updateApply()
+      }
       case 'mm-active-read': {
         // 活跃记忆与轮次总结同源：优先按 session 解析 ownerKey（preset），回退 payload.agent
         const api = ctx.get('motionMemoryApi')
