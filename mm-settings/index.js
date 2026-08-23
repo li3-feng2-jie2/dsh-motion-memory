@@ -446,6 +446,7 @@ export function apply(ctx) {
           periodScopeDetail: period.scopeDetail || PERIOD_DEFAULTS[Number(period.scope) || 1],
           periodTruncK: period.truncK || 2,
           periodEconomize: period.economize || 'none',
+          periodSkipRecent: (period.skipRecentDays === undefined || period.skipRecentDays === null) ? 14 : period.skipRecentDays,
         },
       },
     }
@@ -628,7 +629,7 @@ export function apply(ctx) {
             if (pa.enhance !== undefined) a.enhance.enabled = !!pa.enhance
             if (pa.enhanceMaxDepth !== undefined) a.enhance.maxExpandDepth = Number(pa.enhanceMaxDepth)
           }
-          if (pa.period !== undefined || pa.periodDays !== undefined || pa.periodHours !== undefined || pa.periodMultiWindow !== undefined || pa.periodUseTools !== undefined || pa.periodImpactPercent !== undefined || pa.periodImpactCount !== undefined || pa.periodModel !== undefined || pa.periodSessionBounds !== undefined || pa.periodMemFiles !== undefined) {
+          if (pa.period !== undefined || pa.periodDays !== undefined || pa.periodHours !== undefined || pa.periodMultiWindow !== undefined || pa.periodUseTools !== undefined || pa.periodImpactPercent !== undefined || pa.periodImpactCount !== undefined || pa.periodModel !== undefined || pa.periodSessionBounds !== undefined || pa.periodMemFiles !== undefined || pa.periodSkipRecent !== undefined) {
             a.period = a.period || {}
             if (pa.period !== undefined) a.period.enabled = !!pa.period
             if (pa.periodDays !== undefined) a.period.intervalDays = Number(pa.periodDays)
@@ -639,6 +640,7 @@ export function apply(ctx) {
             if (pa.periodImpactCount !== undefined) a.period.impactCount = Number(pa.periodImpactCount)
             if (pa.periodSessionBounds !== undefined) a.period.sessionBounds = !!pa.periodSessionBounds
             if (pa.periodMemFiles !== undefined) a.period.memFiles = !!pa.periodMemFiles
+            if (pa.periodSkipRecent !== undefined) a.period.skipRecentDays = Math.max(7, Number(pa.periodSkipRecent) || 14)
           }
           const hasModel = !!(a.model && a.model.provider && a.model.model)
           if (hasModel !== !!a.enabled) { a.enabled = hasModel; changed = true }

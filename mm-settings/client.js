@@ -644,6 +644,7 @@ window.__ModuleLoader__.load({
             Num({ value: adm.periodHours || 0, onChange: function (e) { setA('periodHours', Number(e.target.value) || 0) } }),
             React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '时'),
           ), countdown ? React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, countdown) : null),
+          Row('最近素材跳过天数', Num({ value: adm.periodSkipRecent === undefined || adm.periodSkipRecent === null ? 14 : adm.periodSkipRecent, min: 7, onChange: function (e) { setA('periodSkipRecent', Math.max(7, Number(e.target.value) || 14)) } }), '最近 N 天的事件素材不参与周期总结（默认 14，最小 7）——保证近期记忆保持"热"状态不被过早压缩，会话工作段仅被 N 天前的周期总结下沉'),
           Row('周期影响度', React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
             Num({ value: (adm.periodImpactCount && adm.periodImpactCount > 0) ? adm.periodImpactCount : adm.periodImpactPercent || 100, onChange: function (e) {
               if (adm.periodImpactCount && adm.periodImpactCount > 0) { setA('periodImpactCount', Math.max(1, Math.round(Number(e.target.value) || 1))) }

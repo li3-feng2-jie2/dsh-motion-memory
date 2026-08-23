@@ -1584,6 +1584,48 @@ export function apply(ctx) {
       return { ok: false, error: String((e && e.message) || e) }
     }
   }
+  // 会话工作复原（周期下沉后旧会话复活）：works 无该会话段时，从 补充/YYYY/MM/<sid>.json 归档历史取回，
+  // 写回 works（refs 加 period-restore 标记，history 记一条"复原"）。高缓存 sid→周期文件映射（state 登记，
+  // 周期总结完成时写入）避免翻历史；定位依据是周期文件的 range/sessionTurns 事实，不按配置天数计算。
+  state.periodSidCache = state.periodSidCache || {}   // sid → periodRel（周期完成时登记）
+  async function restoreWorksSegment(ownerKey, sid, meta) {
+    try {
+      // ① 补充区同名文件定位（按年月时间分散）：扫 补充/ 下 <sid>.json
+      let found = null
+      for (const f of await listFiles(archiveBaseDir(), true)) {
+        if (!String(f.name).startsWith(sanitizeFile(sid))) continue
+        const o = await readJson(f.path)
+        if (!o || isTombstone(o)) continue
+        if (o.kind === 'works-history' || (o.entries && o.entries.length)) { found = { path: f.path, obj: o }; break }
+      }
+      if (!found) return { ok: false, error: '补充区无该会话工作历史' }
+      // ② 取最新一条历史（entries 按天合并，取最后一天 = 最近状态）
+      const entries = Array.isArray(found.obj.entries) ? found.obj.entries : []
+      const lastEntry = entries.length ? entries[entries.length - 1] : null
+      const restoredText = (lastEntry && lastEntry.content) || found.obj.content || ''
+      if (!restoredText || !restoredText.trim()) return { ok: false, error: '归档内容为空' }
+      // ③ 写回 works（refs 加 period-restore 标记，history 记一条复原）
+      const { obj: act, path } = await readAgentActive(ownerKey)
+      const works = Array.isArray(act.works) ? act.works : []
+      if (works.some(w => w && w.sid === sid)) return { ok: false, error: '已存在本会话工作段，无需复原' }
+      act.works = works.concat([{ sid, text: restoredText, refs: (lastEntry && lastEntry.refs) || [], updatedAt: nowIso() }])
+      pushMergedHistory(act, histEntry('update', {
+        agent: ownerKey || sid, session: sid, turn: (meta && meta.turn) || 0,
+        note: '会话工作复原（来源补充区历史 ' + relOf(found.path) + '）',
+        keep: false,
+      }))
+      act.updatedAt = nowIso()
+      act.schemaVersion = 4
+      delete act.records
+      delete act.summary
+      await writeJson(path, act)
+      // ④ 高缓存登记：本次复原关联的周期文件（由归档路径无法直接推，仅登记 sid→补充文件）
+      state.periodSidCache[sid] = relOf(found.path)
+      return { ok: true, restored: true, text: restoredText.slice(0, 120), path: relOf(found.path) }
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) }
+    }
+  }
   async function writeActive(sid, turn, extra) {
     const ownerKey = (extra && extra.ownerKey) || ''
     const { obj: act, path } = await readAgentActive(ownerKey)
@@ -3998,9 +4040,13 @@ function parseAdminJson(text) {
   // 对话跟踪任务主体（排队执行）
   async function runTurnSummaryTask(sid, turn, meta, gap) {
     const tc = trackCfg()
-    // 程序保证本会话工作段存在（新会话自动创建空白段，不依赖模型 op=prepend；空白段保留）
+    // 程序保证本会话工作段存在：优先尝试复原（周期下沉后旧会话复活）→ 复原失败才建空白段
     const ownerKey0 = (meta && meta.ownerKey) || (meta && meta.agent) || sid
-    try { await ensureSessionWorkSegment(ownerKey0, sid, meta) } catch (e1) {}
+    try {
+      const rst = await restoreWorksSegment(ownerKey0, sid, meta)
+      if (rst && rst.ok) console.log('[motion-memory] 会话工作复原：' + String(sid).slice(-8) + ' ← ' + rst.path)
+      else if (!(rst && rst.ok)) await ensureSessionWorkSegment(ownerKey0, sid, meta)
+    } catch (e1) { await ensureSessionWorkSegment(ownerKey0, sid, meta).catch(() => {}) }
     // 读本轮步骤
     const steps = await readStepRange(sid, turn, 1, undefined)
     if (!steps.length) return { ok: false, text: '轮次 ' + turn + ' 无步骤内容' }
@@ -5067,7 +5113,8 @@ function parseAdminJson(text) {
   // 阶段4：定时周期模式（周期总结 + 影响度筛选 + 手动触发）
   // ═════════════════════════════════════════════════════════════════════
   // 配置：admin.period = { enabled, intervalDays(默认1), intervalHours(0),
-  //        scope(1|2|3 素材广度), scopeDetail(档位), useTools(true), impactPercent(100), impactCount(0) }
+  //        scope(1|2|3 素材广度), scopeDetail(档位), useTools(true), impactPercent(100), impactCount(0),
+  //        skipRecentDays(默认14，最小7：最近 N 天素材不参与周期总结，设置页告知) }
   // 目录：记忆累积/周期记忆/年/月/日/；时间基准 = 最近 auto 周期文件（无则从现在起算）
   // 影响度：score = 查询次数权重 + 时间衰减（今天≈100% → 线性降至 20%）
   // scope 素材广度：1=仅记忆（事件+无模型）；2=+会话首尾；3=+全量轮次
@@ -5078,8 +5125,11 @@ function parseAdminJson(text) {
   function periodCfg() {
     const c = cfg()
     if (!c.admin) c.admin = {}
-    if (!c.admin.period) c.admin.period = { enabled: false, intervalDays: 1, intervalHours: 0, scope: 1, scopeDetail: 'events-nomodel', useTools: true, impactPercent: 100, impactCount: 0, economize: [], truncK: 2 }
-    return c.admin.period
+    if (!c.admin.period) c.admin.period = { enabled: false, intervalDays: 1, intervalHours: 0, scope: 1, scopeDetail: 'events-nomodel', useTools: true, impactPercent: 100, impactCount: 0, economize: [], truncK: 2, skipRecentDays: 14 }
+    const pc = c.admin.period
+    // 最近 N 天素材不总结：默认 14，最小 7（0/缺省回退默认）
+    if (pc.skipRecentDays === undefined || pc.skipRecentDays === null || pc.skipRecentDays < 7) pc.skipRecentDays = pc.skipRecentDays === 0 ? 0 : 14
+    return pc
   }
   function periodBaseDir() { return p(dailyBaseDir(), '周期记忆') }
   // v2 目录粒度：YYYY/MM（中长期记忆，年月足够；文件名含完整时间区分同月多次）
@@ -5221,6 +5271,13 @@ function parseAdminJson(text) {
     const rangeTo = (extra && extra.to) ? Number(extra.to) : 0
     const ignoreSummarized = !!(extra && extra.ignoreSummarized)
     const truncK = Math.max(0, Number((extra && extra.truncK) || pc.truncK) || 2)
+    // 最近 N 天素材不总结（skipRecentDays，默认 14，最小 7）：定时/手动周期收集时把 rangeTo 收窄到「现在 - N 天」，
+    // 只总结 N 天前的素材；历史重总结（extra.from/to 显式传入）不套用此收窄。
+    if (!(extra && (extra.from || extra.to)) && pc.skipRecentDays) {
+      const skipMs = Math.max(7, Number(pc.skipRecentDays) || 14) * 86400000
+      const recentCap = Date.now() - skipMs
+      if (!rangeTo || rangeTo > recentCap) rangeTo = recentCap
+    }
     // 定时周期可独立指定模型（空则用全局管理员模型）；useSessionModel=true 用会话主力模型
     let mc = resolveModelConfig(pc.model)
     if (useSessionModel) {
@@ -5401,6 +5458,17 @@ function parseAdminJson(text) {
     }
     await writeJson(path, obj)
     upsertEmbedding(relOf(path), obj.title, obj.content, 'period').catch(() => {})  // P0-1：周期文件入语义索引
+    // 高缓存登记：sid → 周期文件（本次周期覆盖的会话；事实累积，不按配置天数计算）
+    try {
+      state.periodSidCache = state.periodSidCache || {}
+      for (const st of sessionItems) {
+        if (st && st.sid && st.sid.indexOf('@') < 0) state.periodSidCache[st.sid] = relOf(path)
+      }
+      for (const st of (obj.sessionTurns || [])) {
+        const mm = String(st || '').match(/^(.+)@\d+/)
+        if (mm) state.periodSidCache[mm[1]] = relOf(path)
+      }
+    } catch (eC) {}
     // 周期记忆也算会话工作：更新当前活跃（记录指向周期记忆文件，可点击转跳查看周期内容）
     try {
       const periodOwner = (meta && (meta.ownerKey || meta.agent)) || 'preset:cordis'
@@ -5512,6 +5580,35 @@ function parseAdminJson(text) {
           refs: [{ kind: 'period', title: periodRel, ref: periodRel }],
           updatedAt: nowIso(),
         }
+        // B 下沉（用户确认）：周期总结删除被覆盖的旧会话工作段（先归档到补充同名文件，只保留周期指向）
+        try {
+          const wkArr = Array.isArray(a.obj.works) ? a.obj.works : (Array.isArray(a.obj.records) ? a.obj.records : [])
+          const coveredSids = new Set()
+          for (const e of selected) {
+            const sref = e.obj && e.obj.sessionRef
+            if (sref && sref.sessionId) coveredSids.add(sref.sessionId)
+            if (e.obj && Array.isArray(e.obj.sourceChain)) {
+              for (const sc of e.obj.sourceChain) {
+                const mm = String(sc || '').match(/^(.+)@\d+/)
+                if (mm) coveredSids.add(mm[1])
+              }
+            }
+          }
+          if (coveredSids.size) {
+            for (const w of wkArr.slice()) {
+              if (!w || !w.sid) continue
+              if (w.sid.indexOf('period:') === 0) continue  // 周期指向段不参与下沉
+              if (coveredSids.has(w.sid)) {
+                // 该会话被本次周期覆盖 → 归档完整文本到补充同名文件后移除（B 下沉）
+                await archiveWorksSegment(w.sid, w, { agent: a.ownerKey, session: w.sid, turn: 0 }).catch(() => {})
+                const wIdx = wkArr.indexOf(w)
+                if (wIdx >= 0) wkArr.splice(wIdx, 1)
+              }
+            }
+            if (Array.isArray(a.obj.works)) a.obj.works = wkArr
+            else a.obj.records = wkArr
+          }
+        } catch (eB) { console.error('[motion-memory] 周期下沉归档失败: ' + ((eB && eB.message) || eB)) }
         if (Array.isArray(a.obj.works)) {
           a.obj.works.unshift(entry)
         } else {
@@ -5766,6 +5863,7 @@ function parseAdminJson(text) {
     lines.push('当前状态：' + (due ? '到期（可执行）' : '未到期'))
     lines.push('未总结事件：' + pending + ' 条')
     lines.push('影响度：' + (pc.impactCount ? '固定 ' + pc.impactCount + ' 条' : '前 ' + (pc.impactPercent || 100) + '%') + '，方案 ' + ((pc.scope || 1)) + '（' + (scopeLabelOf(pc.scope, pc.scopeDetail)) + '）')
+    lines.push('最近素材跳过：' + (pc.skipRecentDays || 14) + ' 天（最近素材不总结）')
     return { ok: true, text: lines.join('\n'), data: { enabled: pc.enabled, last: last ? isoStr(last.t) : null, due, pending, scope: pc.scope || 1, scopeDetail: pc.scopeDetail || SCOPE_DEFAULTS[pc.scope || 1] } }
   }
 
@@ -6092,7 +6190,7 @@ function parseAdminJson(text) {
           if (pa.enhanceAutoWrite !== undefined) a.enhance.autoWrite = !!pa.enhanceAutoWrite
           if (pa.enhanceMaxDepth !== undefined) a.enhance.maxExpandDepth = Number(pa.enhanceMaxDepth)
         }
-        if (pa.period !== undefined || pa.periodDays !== undefined || pa.periodHours !== undefined || pa.periodScope !== undefined || pa.periodScopeDetail !== undefined || pa.periodUseTools !== undefined || pa.periodImpactPercent !== undefined || pa.periodImpactCount !== undefined) {
+        if (pa.period !== undefined || pa.periodDays !== undefined || pa.periodHours !== undefined || pa.periodScope !== undefined || pa.periodScopeDetail !== undefined || pa.periodUseTools !== undefined || pa.periodImpactPercent !== undefined || pa.periodImpactCount !== undefined || pa.periodSkipRecent !== undefined) {
           a.period = a.period || {}
           if (pa.period !== undefined) a.period.enabled = !!pa.period
           if (pa.periodDays !== undefined) a.period.intervalDays = Number(pa.periodDays)
@@ -6103,6 +6201,7 @@ function parseAdminJson(text) {
           if (pa.periodUseTools !== undefined) a.period.useTools = !!pa.periodUseTools
           if (pa.periodImpactPercent !== undefined) a.period.impactPercent = Number(pa.periodImpactPercent)
           if (pa.periodImpactCount !== undefined) a.period.impactCount = Number(pa.periodImpactCount)
+          if (pa.periodSkipRecent !== undefined) a.period.skipRecentDays = Math.max(7, Number(pa.periodSkipRecent) || 14)
         }
         const hasModel = !!(a.model && a.model.provider && a.model.model)
         if (hasModel !== !!a.enabled) { a.enabled = hasModel; changed = true }
