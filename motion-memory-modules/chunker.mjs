@@ -76,6 +76,48 @@ export function chunkItemsByBudget(items, budget, langTokens) {
   return chunks
 }
 
+/**
+ * 末尾小段自适应派发（阶段4）：末尾块 token 过小 → 单独派发信息不足，可能导致无有效总结。
+ * 容量基准：R 与「最小可总结量」比较（minTokens，默认取预算的 8% 或固定 300，取较大者）；
+ * 小于基准时不再硬切成碎块：
+ *   - 有前一块且并入不超预算 → 直接并入前块（信息连续，最优）
+ *   - 并入会超预算 → 拆半：一半并入前块（允许略超预算，预算本身有余量），另一半保留为最后一块
+ *   - 下限保护：R < floorTokens（默认 300）→ 强制并入前块（不拆，避免制造更小碎片）
+ * 返回处理后的 chunks（原地修改并返回新数组）。
+ */
+export function mergeTailSmallChunk(chunks, budget, langTokens, minTokens, floorTokens) {
+  if (!Array.isArray(chunks) || chunks.length <= 1) return chunks
+  const tail = chunks[chunks.length - 1]
+  const tailTokens = tail.reduce((n, it) => n + estimateTokens(it.text || '', langTokens), 0)
+  const min = Math.max(300, Number(minTokens) || Math.max(300, Math.round(budget * 0.08)))
+  const floor = Math.max(100, Number(floorTokens) || 300)
+  if (tailTokens >= min) return chunks  // 末尾块足够大，无需处理
+  const prev = chunks[chunks.length - 2]
+  if (!prev) return chunks
+  const prevTokens = prev.reduce((n, it) => n + estimateTokens(it.text || '', langTokens), 0)
+  if (tailTokens <= floor || prevTokens + tailTokens <= budget) {
+    // 下限保护或并入不超预算：整块并入前一块
+    chunks[chunks.length - 2] = prev.concat(tail)
+    chunks.pop()
+    return chunks
+  }
+  // 拆半：一半并入前块，一半保留为最后一块（两块都有相对充足的信息）
+  const half = []
+  let acc = 0
+  for (const it of tail) {
+    const t = estimateTokens(it.text || '', langTokens)
+    if (half.length && acc + t > Math.max(1, Math.round(tailTokens / 2))) { break }
+    half.push(it)
+    acc += t
+  }
+  if (!half.length) { chunks[chunks.length - 2] = prev.concat(tail); chunks.pop(); return chunks }
+  const rest = tail.slice(half.length)
+  chunks[chunks.length - 2] = prev.concat(half)
+  if (rest.length) chunks[chunks.length - 1] = rest
+  else chunks.pop()
+  return chunks
+}
+
 /** 句子级二次切块：单条文本超预算时按句子拆分（与 splitSentences 一致） */
 export function splitItemBySentences(it, budget, langTokens) {
   const sentences = splitSentences(it.text || '')

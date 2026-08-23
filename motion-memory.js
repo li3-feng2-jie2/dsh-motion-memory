@@ -27,8 +27,8 @@ import { SCOPE_DEFAULTS, scopeLabelOf } from './motion-memory-modules/period-sco
 import { ZSTD_MAGIC, encodeSegment, projectKeyOf, sessionLogsRoot, scanZstdFrames, sessionLogPathOf as sessionLogPathOfMod } from './motion-memory-modules/session-log.mjs'
 // 文本工具模块（拆分）：段落/句子切分、diff、历史重建、delta 摘要（纯函数）
 import { splitParagraphs, splitSentences, diffParagraph, diffContent, applyInverseParagraph, applyInverse, reconstructAt, deltaOverlap, trunc, deltaSummary, opLabel } from './motion-memory-modules/text-utils.mjs'
-// 分块/估算模块（拆分）：token 估算、批次摘要、单块预算、句子切块（纯函数）
-import { estimateTokens, batchDigest, blockBudget, chunkItemsByBudget, splitItemBySentences } from './motion-memory-modules/chunker.mjs'
+// 分块/估算模块（拆分）：token 估算、批次摘要、单块预算、句子切块、末尾小段合并（纯函数）
+import { estimateTokens, batchDigest, blockBudget, chunkItemsByBudget, splitItemBySentences, mergeTailSmallChunk } from './motion-memory-modules/chunker.mjs'
 
 export const name = 'motion-memory'
 
@@ -3668,6 +3668,8 @@ function parseAdminJson(text) {
     }
     const chunks = chunkItemsByBudget(expanded, budget, opts.langTokens)
     if (!chunks.length) return { ok: false, error: '无内容可分块' }
+    // 末尾小段自适应（阶段4）：末尾块过小单独派发信息不足 → 并入前块 / 拆半派发 / 下限保护
+    mergeTailSmallChunk(chunks, budget, opts.langTokens)
     // 最终块的 parsed（lessons/op 等模型输出）随 final 透传：
     // 调用方（对话跟踪 lessons/op、周期总结）依赖 res.final.parsed，此前从未被填充。
     let lastParsed = null
@@ -4266,7 +4268,26 @@ function parseAdminJson(text) {
       bumpAggTrackMeta(existingAgg, turn, tc)
       existingAgg.updatedAt = nowIso()
       existingAgg.lastModifiedBy = { agent: trackWho, session: sid, turn }
-      await writeJson(aggPath, existingAgg)
+      // CAS 时间快照写（阶段4）：读时记录版本，写入带 expectedVersion 校验——期间被其它窗口/工具改过则重读重试
+      const aggVersion = (existingAgg && typeof existingAgg.version === 'number') ? existingAgg.version : 0
+      let casAgg = await writeJsonCAS(aggPath, existingAgg, aggVersion)
+      if (casAgg && casAgg.conflict) {
+        // 冲突：以最新版本为基底重放本轮 turn（覆盖语义安全：本轮内容以最新结果为准）
+        const latestAgg = await readJson(aggPath)
+        if (latestAgg && !isTombstone(latestAgg) && latestAgg.kind === 'event') {
+          latestAgg.turns = latestAgg.turns || []
+          const tIdx = latestAgg.turns.findIndex(t => t && t.turn === turn)
+          if (tIdx >= 0) latestAgg.turns[tIdx] = { turn, content: res.content, at: nowIso(), sourceChain: res.chain || [] }
+          else latestAgg.turns.push({ turn, content: res.content, at: nowIso(), sourceChain: res.chain || [] })
+          latestAgg.content = latestAgg.turns.map(t => '【轮次 ' + (t.turn || '?') + '】' + (t.content || '')).join('\n\n')
+          latestAgg.history = latestAgg.history || []
+          latestAgg.history.push(histEntry('update', { agent: trackWho, session: sid, turn, note: '对话跟踪轮次追加（CAS重试）：' + sid + '@' + turn, keep: false }))
+          latestAgg.updatedAt = nowIso()
+          latestAgg.lastModifiedBy = { agent: trackWho, session: sid, turn }
+          await writeJsonCAS(aggPath, latestAgg, (latestAgg && typeof latestAgg.version === 'number') ? latestAgg.version : 0)
+        }
+      }
+      if (!(casAgg && casAgg.ok)) { await writeJson(aggPath, existingAgg) }  // 兜底：CAS 不可用时降级普通写
       state.trackLastTurn.set(sid, turn)
       // 教训条目 → 重要文件夹增量（与新建路径共用）
       let lessonCount2 = 0
