@@ -1028,10 +1028,14 @@ function MemoryView(props) {
     }
     // 会话@轮次 或 其他路径 → 弹窗：先占位（加载中）立即出现，数据回来刷新栈顶（点击转跳即反馈，可继续翻页）
     popupPush({ title: linkText, text: '加载中…' })
-    callHost('mm-ref-read', { ref: linkText, path: h }).then(function (r) {
+    // ref 必须传链接地址（会话id@轮次），不能传显示文字——否则后端解析不了中文要点短名
+    callHost('mm-ref-read', { ref: h, path: h }).then(function (r) {
       setPopup(function (prev) {
         if (!prev || !prev.length) return prev
-        return prev.slice(0, -1).concat([{ title: linkText, text: (r && (r.content || r.text)) || (r && r.ok === false ? r.text : '（无内容）') }])
+        var body = (r && (r.content || r.text))
+          ? (r.content || r.text)
+          : (r && r.ok === false ? ('⚠ ' + r.text + '\n（该引用未找到对应内容，可能是模型生成的无效指向）') : '（无内容）')
+        return prev.slice(0, -1).concat([{ title: linkText, text: body }])
       })
     }).catch(function (e) {
       setPopup(function (prev) {
@@ -1413,6 +1417,17 @@ function MemoryView(props) {
         return true
       })
     }
+    // 时间范围过滤（关键词 + 周期总结都生效；按 updatedAt / at 判断）
+    if (kwFromV || kwToV) {
+      var fMs = kwFromV ? new Date(kwFromV + 'T00:00:00').getTime() : 0
+      var tMs = kwToV ? new Date(kwToV + 'T23:59:59').getTime() : 0
+      list = list.filter(function (it) {
+        var t = it.updatedAt ? new Date(it.updatedAt).getTime() : (it.at || 0)
+        if (fMs && (!t || t < fMs)) return false
+        if (tMs && (!t || t > tMs)) return false
+        return true
+      })
+    }
     var rows = [archRow, searchRow, addRow].concat(list.map(function (it) {
       var isEditing = editState && editState.path === it.path
       var isOpen = !!expandedV[it.path]
@@ -1425,13 +1440,13 @@ function MemoryView(props) {
       var fullContent = String(it.content || '')
       var preview = fullContent.slice(0, 80)
       return React.createElement('div', { key: it.path, style: mmItem },
-        React.createElement('div', { style: { width: 150, flexShrink: 0, fontWeight: 600, wordBreak: 'break-all', cursor: 'pointer' }, onClick: function () { toggleExpanded(it.path) } },
+        React.createElement('div', { style: { width: 150, flexShrink: 0, fontWeight: 600, wordBreak: 'break-all' } },
           it.title + zoneTag,
           (typeof it.score === 'number') ? React.createElement('div', { style: { fontSize: 10, color: 'var(--dsw-alias-label-secondary)', fontWeight: 400, marginTop: 2 } }, '得分 ' + (it.score > 0 ? it.score.toFixed(1) : it.score)) : null,
         ),
         !isEditing
-          ? React.createElement('div', { style: { flex: 1, minWidth: 200, whiteSpace: 'pre-wrap', cursor: 'pointer' }, onClick: function () { toggleExpanded(it.path) } },
-              isOpen ? mdText(fullContent) : (preview + (fullContent.length > preview.length ? ' …（点击展开）' : '')),
+          ? React.createElement('div', { style: { flex: 1, minWidth: 200, whiteSpace: 'pre-wrap' } },
+              isOpen ? mdText(fullContent) : (preview + (fullContent.length > preview.length ? ' …（点末尾 + 展开）' : '')),
               isOpen && linkTitles.length ? React.createElement('div', { key: '__links', style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 } }, '关联（指向它/它指向）：' + linkTitles.join('；')) : null,
             )
           : autoTextArea(editState.value || '', function (e) { setEditState({ path: it.path, value: e.target.value }) }, null, null, function () {
@@ -1441,6 +1456,7 @@ function MemoryView(props) {
         React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
           !isEditing
             ? React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
+                React.createElement('button', { style: mmBtn, title: isOpen ? '收起' : '展开', onClick: function () { toggleExpanded(it.path) } }, isOpen ? '−' : '+'),
                 it.zone === 'archive'
                   ? React.createElement('button', { style: mmBtn, onClick: function () {
                       if (!window.confirm('确认加回关键词记忆：' + it.title + '？（补充区 → 重要区）')) return
