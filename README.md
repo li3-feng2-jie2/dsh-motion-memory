@@ -1,4 +1,4 @@
-# 运动记忆（Motion Memory）
+# 运动记忆（Motion Memory）v0.1.0
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话中值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
@@ -25,7 +25,34 @@ dsh plugin --profile <你的profile名> add github:li3-feng2-jie2/dsh-motion-mem
 
 **重启 DSH**，记忆工具与设置界面随重启生效。之后升级版本：`dsh plugin --profile <你的profile名> update dsh-motion-memory`。
 
-### 方式二：手动放置
+### 方式二：git clone 安装（推荐 · 支持自动更新检查）
+
+插件内置"版本与更新"功能（启动自动检查 + 每 12 小时一次），依赖 git 工作副本，所以**推荐用 git clone 安装**：
+
+```bash
+cd <你的profile>/plugins
+git clone https://github.com/li3-feng2-jie2/dsh-motion-memory motion-memory-dist
+```
+
+然后在 profile 的 `cordis.patch.yml` 里启用：
+
+```yaml
+- insert:
+    - id: motion-memory
+      name: ./plugins/motion-memory-dist/motion-memory.js
+    - id: mm-settings
+      name: mm-settings
+```
+
+并把 `mm-settings` 挂到 profile 的 `node_modules/`（Windows 推荐用 junction）：
+
+```powershell
+mklink /J "<你的profile>\node_modules\mm-settings" "<你的profile>\plugins\motion-memory-dist\mm-settings"
+```
+
+**重启 DSH** 后，设置页 →「运动记忆」→「版本与更新」可检查并一键更新（详见下文[版本与更新](#版本与更新)）。
+
+### 方式三：手动放置
 
 1. 下载本仓库源码：`https://github.com/li3-feng2-jie2/dsh-motion-memory`
 2. 把仓库根目录下的 `motion-memory.js`（记忆核心插件）、`mm-settings/`（设置界面插件：`index.js` + `client.js` + `package.json`）、`motion-memory-modules/`（纯函数模块）放到 DSH profile 的插件目录（如 `~/.dsh/profiles/<profile名>/plugins/`）
@@ -41,6 +68,15 @@ dsh plugin --profile <你的profile名> add github:li3-feng2-jie2/dsh-motion-mem
          name: mm-settings
    ```
 5. **重启 DSH**，记忆工具与设置界面随重启生效。
+
+## 版本与更新
+
+- **当前版本**：v0.1.0（初行版）
+- **git 安装（推荐）**：插件启动后自动检查更新（启动 8 秒后一次 + 每 12 小时一次）。有新版时：
+  - 设置页 →「运动记忆」→「版本与更新」→ 点「检查更新」查看，点「更新」拉取，**重启 DSH 生效**；
+  - 或命令：`memory cmd=update`（检查） / `memory cmd=update action=apply`（更新）。
+- **手动安装**：无法自动更新——检查更新时会给出项目地址超链接（新标签打开），请到 [GitHub 仓库](https://github.com/li3-feng2-jie2/dsh-motion-memory) 重新下载最新源码替换。
+- 检查更新需要 git 与网络可用；连接失败会给出项目地址跳转链接，不影响插件使用。
 
 ## 快速上手（3 步）
 
@@ -70,7 +106,7 @@ dsh plugin --profile <你的profile名> add github:li3-feng2-jie2/dsh-motion-mem
 
 | 工具 | 用途 |
 |---|---|
-| `memory` | 综合入口：status / config / notify / recent / history / recall_past / restore / track_run / period_run / period_status / enhance / admin_view / admin_summarize / isolation 等 |
+| `memory` | 综合入口：status / config / notify / recent / history / recall_past / restore / track_run / period_run / period_status / enhance / admin_view / admin_summarize / isolation / update 等 |
 | `memory_query` | 查询/回忆：开工总览 / keyword 搜索 / open 阅读（关联展开）/ openTurn 读轮次原文 / recent / enhance |
 | `memory_add` | 写入：keyword / necessary / event / update / edit（用户确认强改）/ forget |
 
