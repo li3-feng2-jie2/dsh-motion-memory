@@ -1031,10 +1031,13 @@ export function apply(ctx) {
     }
     return out.length > cap ? trimTextMiddle(out, trimCap(cap)) : out
   }
-  // 轮次引用统一读取：ref 格式 `会话id@轮次`（整轮）或 `会话id@轮次:step1-2`（步骤段）
+  // 轮次引用统一读取：ref 格式 `会话id@轮次`（整轮）、`会话id@轮次:step1-2`（步骤段）、
+  // 兼容节约模式产生的 `会话id@轮次:truncated` 与句子切分后缀 `#sN`（剥掉后回退到轮次级）
   async function readTurnRef(ref, cap) {
     const s = String(ref || '')
-    const m = s.match(/^(.+)@(\d+)(?::step(\d+)(?:-(\d+))?)?$/)
+    // 剥掉 #sN 句子切分后缀 与 :truncated/:truncated#sN 节约模式后缀
+    const normalized = s.replace(/#s\d+$/, '').replace(/:truncated(#s\d+)?$/, '')
+    const m = normalized.match(/^(.+)@(\d+)(?::step(\d+)(?:-(\d+))?)?$/)
     if (!m) return '（轮次指向格式无效：' + s + '）'
     const sid = m[1]
     const turn = Number(m[2])
@@ -4190,7 +4193,8 @@ function parseAdminJson(text) {
         text: stepsToText(seg.steps, true),
       }))
     } else if (eco.userText) {
-      items = [{ id: sid + '@' + turn + (refPrecision === 'step' ? ':truncated' : ''), text: eco.userText }]
+      // truncated 模式：id 归一为 sid@turn（:truncated 是内部标记，不应进入 sourceChain——否则引用解析失败）
+      items = [{ id: sid + '@' + turn, text: eco.userText }]
     }
     if (!items.length) return { ok: false, text: '无内容可总结' }
     // B-2：注入本会话现有工作信息（works 里 sid 匹配的段落）+ 会话跟踪状态，
