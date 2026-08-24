@@ -1,6 +1,6 @@
 ﻿{
   "name": "dsh-motion-memory",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "运动记忆 Motion Memory — DeepSeek Harness 本地记忆管理插件：对话跟踪 + 周期总结，会话沉淀为可溯源的本地记忆文档。",
   "type": "module",
   "main": "motion-memory.js",

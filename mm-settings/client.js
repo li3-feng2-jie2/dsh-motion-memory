@@ -743,6 +743,7 @@ window.__ModuleLoader__.load({
         return out.length ? out : s
       }
       sections.push(Section('版本与更新',
+        CheckRow('自动检查更新', cfg.autoUpdateCheck !== false, function (e) { set('autoUpdateCheck', e.target.checked) }, '启动后 8 秒 + 每 12 小时自动检查一次新版本（git 安装 fetch 对比 / 手动安装版本号+清单对比）；仅检查不自动下载。关 = 只手动点"检查更新"'),
         React.createElement('div', { style: msgStyle }, (updateInfo && updateInfo.text) ? withLinks(updateInfo.text) : ('当前版本：' + ((updateInfo && updateInfo.info && updateInfo.info.version) || '?') + (updateInfo && updateInfo.info && updateInfo.info.tag ? '（' + updateInfo.info.tag + '）' : '') + '\n点击"检查更新"查看是否有新版本')),
         React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' } },
           Button({ disabled: busy || updateBusy, onClick: function () {
@@ -755,7 +756,7 @@ window.__ModuleLoader__.load({
             callHost('mm-update', {}).then(function (r) { setUpdateInfo(r || { text: '（无返回）' }) }).catch(function (e) { setUpdateInfo({ text: '更新失败：' + String((e && e.message) || e) }) }).finally(function () { setUpdateBusy(false) })
           } }, '更新'),
         ),
-        React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6, whiteSpace: 'pre-wrap' } }, '说明：git 安装（推荐）可检查并拉取更新，重启 DSH 生效；手动复制安装无法自动更新，请从发布仓库重新下载。'),
+        React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6, whiteSpace: 'pre-wrap' } }, '说明：git 安装（推荐）检查并拉取更新；手动安装按版本号 + MANIFEST 清单对比，增量下载校验后原子覆盖（备份保留最近一份，临时文件自动清理），重启 DSH 生效。'),
       ))
 
       return React.createElement('div', { style: { maxWidth: 640 } },

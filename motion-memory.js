@@ -16,7 +16,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { createHash } from 'node:crypto'
 // 原生 fs：仅用于读写插件自身持久化配置（~/.dsh/profiles/web/motion-memory.config.json），
 // 固定位置不随工作区/会话漂移；记忆文件仍走 ctx.fs（沙箱）。
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync, rmdirSync, unlinkSync } from 'node:fs'
 import { zstdDecompressSync } from 'node:zlib'
 // 版本更新检查（v0.1.x）：git 绑定安装时用 git fetch/pull 检查并更新
 import { execFile as execFileCb } from 'node:child_process'
@@ -265,6 +265,17 @@ export function apply(ctx) {
     const r = normWs(state.root || '')
     const t = normWs(String(p || ''))
     return !!(r && (t === r || t.startsWith(r + '/')))
+  }
+  // 插件代码目录白名单：更新覆盖（清单驱动增量下载）需要写插件自身文件，
+  // 与配置文件同待遇走原生 node:fs（仅放行插件目录本身，不含其它任意路径）。
+  function isUnderPluginDir(p) {
+    const base = normWs(pluginDir())
+    const t = normWs(String(p || ''))
+    return !!(base && (t === base || t.startsWith(base + '/')))
+  }
+  // 原生写（更新覆盖/备份/清理专用）：仅放行插件目录与临时目录，其它路径一律拒绝
+  function nativeWriteAllowed(p) {
+    return isUnderPluginDir(p) || (String(p || '').indexOf('motion-memory-tmp') >= 0 || String(p || '').indexOf('motion-memory-bak') >= 0)
   }
   async function writeTextChannel(target, text, policy) {
     const disp = (target && typeof target === 'object' ? (target.displayPath || target.targetKey || '') : String(target || ''))
@@ -1223,6 +1234,9 @@ export function apply(ctx) {
       // 总结摘要字数（k token，默认 2）：统一控制 ①works 记录链总量预算 ②B-2 注入【本会话现有工作信息】软限制；
       // 换算走 estimateTokens+langTokens（中文约 1.5 字/token）。旧 activeWorksTokens 值迁移到此。
       summaryCharsK: 2,
+      // 自动检查更新（默认开）：启动后 8 秒 + 每 12 小时自动检查一次（git/版本号/清单对比）；
+      // 关 = 仅手动点"检查更新"。检查是只读的，不会自动下载覆盖。
+      autoUpdateCheck: true,
       queryHistoryN: 0, updateHistoryN: 0, historyPageSize: 20,
       rootUserSet: false,
       // 检索时间衰减（天）：周期/活跃索引引用得分按此线性衰减（默认 30 天 100%→20%）
@@ -3093,7 +3107,7 @@ export function apply(ctx) {
     const c = cfg()
     let changed = false
     const patch = (args && args.patch) || {}
-    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'summaryCharsK']
+    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'summaryCharsK', 'autoUpdateCheck']
     for (const k of keys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
     // indexScore（活跃索引 score 参数）子对象
     if (patch.indexScore && typeof patch.indexScore === 'object') {
@@ -6105,15 +6119,48 @@ function parseAdminJson(text) {
     } catch (e) { return { ok: false, text: '检查更新失败：' + ((e && e.message) || e) + '（请确认网络可用）\n项目地址：' + UPDATE_PROJECT_URL, info: null, projectUrl: UPDATE_PROJECT_URL, mode: 'version' } }
     if (!remoteVer) return { ok: false, text: '检查更新失败：无法获取远端版本号\n项目地址：' + UPDATE_PROJECT_URL, info: null, projectUrl: UPDATE_PROJECT_URL, mode: 'version' }
     const cmp = compareVersions(remoteVer, localVer)
+    // 版本不一致 → 再拉 MANIFEST 做结构/哈希对比，检查阶段就给出差异清单
+    let diffText = ''
+    let diffCount = 0
+    if (cmp > 0) {
+      try {
+        const mf = await fetch('https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/MANIFEST.json', { signal: AbortSignal.timeout(20000) })
+        if (mf && mf.ok) {
+          const manifest = await mf.json()
+          if (manifest && manifest.files && typeof manifest.files === 'object') {
+            const base = pluginDir()
+            const missing = [], changed = [], extra = []
+            const localSeen = {}
+            const walkL = (dirAbs) => { try { for (const en of readdirSync(dirAbs, { withFileTypes: true })) { if (en.name === '.git') continue; const full = p(dirAbs, en.name); if (en.isDirectory()) walkL(full); else if (en.isFile()) localSeen[full] = true } } catch (e) {} }
+            if (base) walkL(base)
+            for (const rel of Object.keys(manifest.files)) {
+              const normRel = String(rel).replace(/\//g, '\\')
+              const abs = base ? p(base, normRel) : ''
+              const localBytes = abs && existsSync(abs) ? readFileSync(abs) : null
+              if (!localBytes) { missing.push(rel); continue }
+              const lh = createHash('sha256').update(localBytes).digest('hex')
+              if (lh !== String(manifest.files[rel] || '')) changed.push(rel)
+              if (abs) delete localSeen[abs]
+            }
+            if (base) extra = Object.keys(localSeen)
+            diffCount = missing.length + changed.length
+            diffText = '\n差异：' + (missing.length ? '缺失 ' + missing.length + '（' + missing.slice(0, 3).join('、') + (missing.length > 3 ? '…' : '') + '）' : '') +
+              (changed.length ? (missing.length ? '；' : '') + '变更 ' + changed.length + '（' + changed.slice(0, 3).join('、') + (changed.length > 3 ? '…' : '') + '）' : '') +
+              (extra.length ? '；本地额外 ' + extra.length + '（不删除）' : '') +
+              '\n点击"更新"按清单增量下载覆盖（校验哈希后原子替换，备份保留最近一份）'
+          }
+        }
+      } catch (e) {}
+    }
     return {
-      ok: true, hasUpdate: cmp > 0, behind: cmp > 0 ? 1 : 0, mode: 'version',
+      ok: true, hasUpdate: cmp > 0, behind: cmp > 0 ? 1 : 0, mode: 'version', diffCount,
       info: { git: false, version: localVer, remoteVersion: remoteVer, projectUrl: remoteUrl || UPDATE_PROJECT_URL },
       projectUrl: remoteUrl || UPDATE_PROJECT_URL,
       text: '本地版本 v' + localVer + ' · 远端版本 v' + remoteVer +
-        (cmp > 0 ? '\n发现新版本（远端 ' + remoteVer + ' > 本地 ' + localVer + '）\n点击"更新"下载最新文件（更新后需重启 DSH 生效）' : '\n已是最新版本'),
+        (cmp > 0 ? '\n发现新版本（远端 ' + remoteVer + ' > 本地 ' + localVer + '）' + diffText : '\n已是最新版本'),
     }
   }
-  // 执行更新（git 分支：pull --ff-only；非 git 分支：版本号对比，仅提示手动下载——无法安全覆盖本地文件）
+  // 执行更新（git 分支：pull --ff-only；非 git 分支：清单驱动增量下载覆盖）
   async function applyUpdate() {
     const dir = pluginGitDir()
     if (dir) {
@@ -6122,8 +6169,119 @@ function parseAdminJson(text) {
       const head = await execGit(['rev-parse', '--short', 'HEAD'], { cwd: dir })
       return { ok: true, text: '已更新（提交 ' + (head.ok ? head.out : '?') + '），请重启 DSH 生效。\n' + pull.out, data: { head: head.ok ? head.out : '' } }
     }
-    // 非 git：版本号已对比有新版 → 提示手动下载（不自动覆盖，避免破坏手动安装的本地改动）
-    return { ok: false, text: '手动复制安装无法自动更新（避免覆盖你的本地文件）。\n请从发布仓库下载最新源码替换：' + UPDATE_PROJECT_URL + '\n（或用 git clone 安装以获得自动更新）' }
+    // 非 git：清单驱动增量下载覆盖（MANIFEST 对比 → 下载变化文件 → 校验 → 原子覆盖 → 备份/清理）
+    return downloadUpdateFromManifest()
+  }
+  // 清单驱动增量更新（非 git 手动安装）：从 GitHub raw 拉 MANIFEST.json（文件清单+哈希+版本），
+  // 对比本地只下载变化文件，临时目录校验后原子覆盖；备份保留最近一份，每次更新清理上上版本缓存。
+  async function downloadUpdateFromManifest() {
+    const base = pluginDir()
+    if (!base) return { ok: false, text: '无法定位插件目录，更新中止' }
+    try {
+      // ① 拉远端 MANIFEST
+      const mf = await fetch('https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/MANIFEST.json', { signal: AbortSignal.timeout(20000) })
+      if (!mf || !mf.ok) return { ok: false, text: '无法获取远端文件清单（MANIFEST.json），请检查网络' }
+      const manifest = await mf.json()
+      const remoteVer = String((manifest && manifest.version) || '')
+      if (!remoteVer || !manifest.files || typeof manifest.files !== 'object') return { ok: false, text: '远端文件清单格式无效' }
+      const localPkg = readJsonFileNative(p(base, 'package.json'))
+      const localVer = (localPkg && localPkg.version) || '0.1.0'
+      if (compareVersions(remoteVer, localVer) <= 0) return { ok: true, text: '已是最新版本（v' + localVer + '），无需更新' }
+      // ② 对比本地：找出需要更新的文件（缺失 / 哈希不同）
+      const toUpdate = []
+      const localFiles = {}
+      const walkLocal = (dirAbs) => {
+        try {
+          const entries = readdirSync(dirAbs, { withFileTypes: true })
+          for (const en of entries) {
+            if (en.name === '.git') continue
+            const full = p(dirAbs, en.name)
+            if (en.isDirectory()) walkLocal(full)
+            else if (en.isFile()) localFiles[full] = true
+          }
+        } catch (e) {}
+      }
+      walkLocal(base)
+      for (const rel of Object.keys(manifest.files)) {
+        const abs = p(base, rel)
+        const remoteHash = String(manifest.files[rel] || '')
+        // 归一化路径比较（远端用 /，本地可能 \）
+        const normRel = String(rel).replace(/\//g, '\\')
+        const normAbs = p(base, normRel)
+        const localBytes = existsSync(normAbs) ? readFileSync(normAbs) : null
+        if (!localBytes) { toUpdate.push({ rel, abs: normAbs }); continue }
+        const localHash = createHash('sha256').update(localBytes).digest('hex')
+        if (localHash !== remoteHash) toUpdate.push({ rel, abs: normAbs })
+        delete localFiles[normAbs]
+      }
+      // 多余文件（远端清单没有的本地文件）：不删除，仅记录（避免误伤用户自加文件）
+      const extraFiles = Object.keys(localFiles)
+      if (!toUpdate.length) {
+        // 版本号比远端旧但文件哈希全一致（本地手动改过但内容等价）→ 更新 package.json 版本
+        const pkgAbs = p(base, 'package.json')
+        const pkg = readJsonFileNative(pkgAbs) || {}
+        pkg.version = remoteVer
+        nativeWriteAllowed(pkgAbs) && writeFileSync(pkgAbs, JSON.stringify(pkg, null, 1), 'utf8')
+        return { ok: true, text: '文件已是最新（版本号同步为 v' + remoteVer + '），请重启 DSH 生效' + (extraFiles.length ? '\n（忽略本地额外文件 ' + extraFiles.length + ' 个）' : '') }
+      }
+      // ③ 下载到临时目录 → 校验 → 原子覆盖
+      const tmpDir = p(base, '.motion-memory-tmp')
+      const bakDir = p(base, '.motion-memory-bak')
+      try { mkdirSync(tmpDir, { recursive: true }); rmSyncSafe(tmpDir) } catch (e) {}
+      mkdirSync(tmpDir, { recursive: true })
+      const downloaded = []
+      for (const f of toUpdate) {
+        const rawUrl = 'https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/' + f.rel.replace(/\\/g, '/')
+        const resp = await fetch(rawUrl, { signal: AbortSignal.timeout(30000) })
+        if (!resp || !resp.ok) { cleanupUpdateCache(tmpDir); return { ok: false, text: '下载失败：' + f.rel + '（HTTP ' + (resp && resp.status) + '），已清理临时文件，未改动插件' } }
+        const buf = Buffer.from(await resp.arrayBuffer())
+        const hash = createHash('sha256').update(buf).digest('hex')
+        if (hash !== String(manifest.files[f.rel] || '')) { cleanupUpdateCache(tmpDir); return { ok: false, text: '校验失败：' + f.rel + '（哈希不匹配），已清理临时文件，未改动插件' } }
+        const normRelT = f.rel.replace(/\//g, '\\')
+        const tmpAbs = p(tmpDir, normRelT)
+        mkdirSync(tmpAbs.slice(0, Math.max(tmpAbs.lastIndexOf('/'), tmpAbs.lastIndexOf('\\'))), { recursive: true })
+        writeFileSync(tmpAbs, buf)
+        downloaded.push({ rel: f.rel, abs: f.abs, tmpAbs })
+      }
+      // ④ 备份旧文件（保留最近一份，清掉更早的）
+      try { mkdirSync(bakDir, { recursive: true }); rmSyncSafe(bakDir) } catch (e) {}
+      mkdirSync(bakDir, { recursive: true })
+      for (const f of downloaded) {
+        if (existsSync(f.abs)) {
+          const bakAbs = p(bakDir, f.rel.replace(/\\/g, '/'))
+          mkdirSync(bakAbs.slice(0, Math.max(bakAbs.lastIndexOf('/'), bakAbs.lastIndexOf('\\'))), { recursive: true })
+          writeFileSync(bakAbs, readFileSync(f.abs))
+        }
+      }
+      // ⑤ 原子覆盖（全部就绪后一次性替换）
+      for (const f of downloaded) {
+        mkdirSync(f.abs.slice(0, Math.max(f.abs.lastIndexOf('/'), f.abs.lastIndexOf('\\'))), { recursive: true })
+        writeFileSync(f.abs, readFileSync(f.tmpAbs))
+      }
+      // ⑥ 清理：临时目录删除；备份只保留最近一份（本次已写入，删除后下次再建）
+      cleanupUpdateCache(tmpDir)
+      const extraNote = extraFiles.length ? '\n（忽略本地额外文件 ' + extraFiles.length + ' 个，未删除）' : ''
+      return { ok: true, text: '已更新到 v' + remoteVer + '（更新 ' + downloaded.length + ' 个文件），请重启 DSH 生效。\n备份保留在 .motion-memory-bak（最近一份）。' + extraNote, data: { version: remoteVer, updated: downloaded.length } }
+    } catch (e) {
+      return { ok: false, text: '更新失败：' + ((e && e.message) || e) + '（未改动插件文件）' }
+    }
+  }
+  // 更新缓存清理：删除临时目录内容；备份目录由下次更新重建（只留最近一份）
+  function cleanupUpdateCache(tmpDir) {
+    try { rmSyncSafe(tmpDir) } catch (e) {}
+  }
+  // 递归删除（ESM 下直接用 node:fs rmSync，失败降级手动递归）
+  function rmSyncSafe(target) {
+    try { rmSync(target, { recursive: true, force: true }) }
+    catch (e) { try { rmRecursiveSafe(target) } catch (e2) {} }
+  }
+  function rmRecursiveSafe(target) {
+    if (!existsSync(target)) return
+    const st = statSync(target)
+    if (st.isDirectory()) {
+      for (const en of readdirSync(target)) rmRecursiveSafe(p(target, en))
+      try { rmdirSync(target) } catch (e) {}
+    } else { try { unlinkSync(target) } catch (e) {} }
   }
   // memory cmd=update（action=check 检查 / apply 更新）
   async function memCmdUpdate(args, meta) {
@@ -6142,6 +6300,8 @@ function parseAdminJson(text) {
   let autoTimerId = null
   function startAutoUpdateCheck() {
     try {
+      // 自动检查开关（默认开）：关 = 不启动定时器，仅手动检查
+      if (cfg().autoUpdateCheck === false) return
       const bootTimer = setTimeout(() => {
         autoUpdateCheck().catch(() => {})
         scheduleLoop()
@@ -6194,6 +6354,7 @@ function parseAdminJson(text) {
           historyPageSize: c.historyPageSize || 20,
           summaryInjectChars: c.summaryInjectChars || 300,
           summaryCharsK: (c.summaryCharsK === undefined || c.summaryCharsK === null) ? 2 : c.summaryCharsK,
+          autoUpdateCheck: c.autoUpdateCheck !== false,
           recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
           admin: {
             enabled: !!adm.enabled,
@@ -6312,7 +6473,7 @@ function parseAdminJson(text) {
       const patch = (args && args.patch) || {}
       const c = cfg()
       let changed = false
-      const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'summaryCharsK']
+      const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'summaryCharsK', 'autoUpdateCheck']
       for (const k of baseKeys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
       if (patch.recordModel && typeof patch.recordModel === 'object') {
         c.recordModel = c.recordModel || { provider: '', model: '' }
@@ -6403,6 +6564,7 @@ function parseAdminJson(text) {
           queryHistoryN: c.queryHistoryN || 0, updateHistoryN: c.updateHistoryN || 0, historyPageSize: c.historyPageSize || 20,
           summaryInjectChars: c.summaryInjectChars || 300,
           summaryCharsK: (c.summaryCharsK === undefined || c.summaryCharsK === null) ? 2 : c.summaryCharsK,
+          autoUpdateCheck: c.autoUpdateCheck !== false,
           recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
           admin: {
             enabled: !!adm.enabled,
