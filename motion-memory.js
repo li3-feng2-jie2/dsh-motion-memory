@@ -1236,8 +1236,6 @@ export function apply(ctx) {
         outputTokens: 0,
         extraJson: null,
         dailyBudget: 0,
-        // 总结队列并发（对话跟踪等重活同时运行数；0=按顺序执行，默认防本地小模型排队）
-        summaryConcurrency: 0,
       },
       // LLM 写入消歧判定（P0-2）：memory_add 有近似候选时让模型判断"同一实体/不同实体/不确定"
       // （默认关省 token；模型失败自动回退机械查重规则）
@@ -3182,9 +3180,8 @@ export function apply(ctx) {
   }
   // ═════════════════════════════════════════════════════════════════════
   // 统一模型工作调度器：按工作类型独立 FIFO 排队 + 并发池。
-  //   track  = 对话跟踪（热路径，并发 = admin.summaryConcurrency，0=按顺序执行）
-  //   period = 周期总结   enhance = 强化搜索   admin = 整理/重审/手动压缩
-  // period/enhance/admin 并发固定 1（互不抢占也互不阻塞，避免并发请求数翻倍）。
+  //   track  = 对话跟踪   period = 周期总结   enhance = 强化搜索   admin = 整理/重审/手动压缩
+  // 各队列并发统一 1（任务级串行，防本地小模型排队乱序）；并行交给块级委派。
   // 队列不设硬上限：超出高水位（SUMMARY_WATERMARK，默认 50）的任务不丢弃：
   //   ① 记忆管理员已配模型 → 直接移交给管理员队列处理（不占 track 并发位）；
   //   ② 管理员没配模型 → 溢出落盘缓存 _admin/pending/<type>/，队列空闲时拾起续跑。
@@ -3196,11 +3193,10 @@ export function apply(ctx) {
   const typeStates = {}   // type -> { wait: [], workers: 0 }
   const spilledWaiters = {} // type -> [ { resolve, file } ]（同进程等待缓存任务结果的调用方）
   const drainLocks = {}   // type -> boolean（防并发扫描同一缓存目录）
-  // 并发数：track 读 admin.summaryConcurrency，0/缺省 = 1（按顺序执行，防本地小模型排队乱序）
+  // 并发数：所有队列统一 1（任务级串行执行，防本地小模型排队乱序）；
+  // 并行能力交给块级委派（工具模型 concurrency + 管理员协作接单）
   function queueConcurrencyOf(type) {
-    if (type !== 'track') return 1
-    const c = Number(adminCfg().summaryConcurrency) || 0
-    return c > 0 ? c : 1
+    return 1
   }
   function adminHasModel() {
     const a = adminCfg().model || {}

@@ -168,7 +168,6 @@ export function apply(ctx) {
         ],
         concurrency: 0, singleFileTokens: 2048, recallDepth: 1,
         outputTokens: 1024, extraJson: null, dailyBudget: 0,
-        summaryConcurrency: 0,
       },
     }
   }
@@ -432,7 +431,6 @@ export function apply(ctx) {
           ],
           concurrency: adm.concurrency || 0, singleFileTokens: adm.singleFileTokens || 2048, recallDepth: adm.recallDepth || 1,
           outputTokens: adm.outputTokens || 1024, extraJson: adm.extraJson || null, dailyBudget: adm.dailyBudget || 0,
-          summaryConcurrency: adm.summaryConcurrency || 0,
           track: !!(track.enabled), trackInjectActive: track.injectActive !== false, trackInterval: track.interval === undefined || track.interval === null ? 0 : track.interval,
           trackStartTurn: track.startTurn === undefined || track.startTurn === null ? 0 : track.startTurn,
           trackEconomize: track.economize || 'none', trackTruncK: track.truncK || 2,
@@ -583,7 +581,7 @@ export function apply(ctx) {
           if (pa.trackModel !== undefined) { a.track = a.track || {}; changed = applySubModel(a.track, 'model', pa.trackModel) || changed }
           if (pa.enhanceModel !== undefined) { a.enhance = a.enhance || {}; changed = applySubModel(a.enhance, 'model', pa.enhanceModel) || changed }
           if (pa.periodModel !== undefined) { a.period = a.period || {}; changed = applySubModel(a.period, 'model', pa.periodModel) || changed }
-          const nums = ['contextTokens', 'summaryPercent', 'concurrency', 'singleFileTokens', 'recallDepth', 'outputTokens', 'dailyBudget', 'summaryConcurrency', 'trackInterval', 'trackTruncK', 'enhanceMaxDepth', 'periodDays', 'periodHours', 'periodImpactPercent', 'periodImpactCount']
+          const nums = ['contextTokens', 'summaryPercent', 'concurrency', 'singleFileTokens', 'recallDepth', 'outputTokens', 'dailyBudget', 'trackInterval', 'trackTruncK', 'enhanceMaxDepth', 'periodDays', 'periodHours', 'periodImpactPercent', 'periodImpactCount']
           for (const k of nums) { if (pa[k] !== undefined) { a[k] = Number(pa[k]); changed = true } }
           const bools = ['periodMultiWindow', 'periodSessionBounds', 'periodMemFiles']
           for (const k of bools) { if (pa[k] !== undefined) { a[k] = !!pa[k]; changed = true } }
