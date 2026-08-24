@@ -1141,6 +1141,12 @@ export function apply(ctx) {
         state.mmCache = {}
         return { ok: true, text: '已创建轮次总结：' + sid + '@' + turn, data: { path: relOf(path, r) } }
       }
+      case 'mm-agent-of-session': {
+        // 按指定会话解析其当前智能体（ownerKey，preset:*）；客户端智能体筛选跟随当前窗口会话
+        const sid = String((payload && payload.session) || state.lastSid || '')
+        const owner = sid ? await ownerKeyOfSession(sid) : ''
+        return { ok: true, agent: owner || 'preset:cordis' }
+      }
       case 'mm-keyword-list': {
         const c = await readCfg()
         const r = rootOf(c)

@@ -931,22 +931,36 @@ function MemoryView(props) {
     }
     return k
   }
-  // 加载智能体列表 + 当前智能体；初始化筛选 = 仅当前智能体（默认只显示当前智能体的关键词）
+  // 按当前窗口会话解析其智能体（ownerKey），回调返回 agent；失败兜底 preset:cordis
+  function resolveCurrentAgent(cb) {
+    callHost('mm-agent-of-session', { session: sessionId || '' }).then(function (r) {
+      var a = (r && r.agent) || 'preset:cordis'
+      if (cb) cb(a)
+    }).catch(function () { if (cb) cb('preset:cordis') })
+  }
+  // 加载智能体列表 + 当前智能体（按当前窗口会话解析）；初始化筛选 = 仅当前智能体
   function ensureAgentsLoaded() {
     if (agentsV.length) return
     callHost('mm-agent-list', {}).then(function (r) {
       var list = (r && r.items) || []
       setAgents(list)
-      callHost('mm-keyword-list', {}).then(function (r2) {
-        var cur = (r2 && r2.currentAgent) || 'preset:cordis'
+      resolveCurrentAgent(function (cur) {
         setCurAgent(cur)
         setKwFilter([cur])
-      }).catch(function () {
-        setCurAgent('preset:cordis')
-        setKwFilter(['preset:cordis'])
       })
     }).catch(function (e) { setMsg(String((e && e.message) || e)) })
   }
+  // 会话变化（当前窗口绑定会话切换/智能体变动）→ 智能体筛选跟随
+  React.useEffect(function () {
+    if (!sessionId) return
+    resolveCurrentAgent(function (cur) {
+      if (cur !== curAgentV) {
+        setCurAgent(cur)
+        setKwFilter([cur])
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
   // 智能体白名单过滤：筛选列表非空且关键词与筛选无交集 → 隐藏；无归属（agents 空）或筛选空 → 显示
   function kwHiddenByAgent(it) {
     if (!kwFilterV || !kwFilterV.length) return false
