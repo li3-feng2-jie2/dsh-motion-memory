@@ -6024,30 +6024,32 @@ function parseAdminJson(text) {
       try { p = (typeof import.meta !== 'undefined' && import.meta.url) ? import.meta.url : '' } catch (e) {}
       if (!p && typeof __filename !== 'undefined') p = __filename
       if (!p) return ''
-      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7)).replace(/\//g, '\\')
-      p = String(p).replace(/\\/g, '\\')
+      // file:///C:/... → C:/...（去前导 / 和 file 前缀，统一 / 分隔）
+      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7))
+      p = String(p).replace(/\\/g, '/').replace(/^\/+/, '')
       let cur = p
       const idx = cur.toLowerCase().indexOf('motion-memory.js')
       if (idx >= 0) cur = cur.slice(0, idx)
       for (let i = 0; i < 8; i++) {
-        if (existsSync(cur + '.git')) return cur.replace(/\\+$/, '')
-        const last = cur.lastIndexOf('\\')
+        if (existsSync(cur + '.git')) return cur.replace(/\/+$/, '')
+        const last = cur.lastIndexOf('/')
         if (last <= 0) break
         cur = cur.slice(0, last)
       }
     } catch (e) {}
     return ''
   }
-  // 插件所在目录（motion-memory.js 的上级目录；非 git 安装也适用）
+  // 插件所在目录（motion-memory.js 的上级目录；非 git 安装也适用；统一 / 分隔）
   function pluginDir() {
     try {
       let p = ''
       try { p = (typeof import.meta !== 'undefined' && import.meta.url) ? import.meta.url : '' } catch (e) {}
       if (!p && typeof __filename !== 'undefined') p = __filename
       if (!p) return ''
-      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7)).replace(/\//g, '\\')
+      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7))
+      p = String(p).replace(/\\/g, '/').replace(/^\/+/, '')
       const idx = String(p).toLowerCase().indexOf('motion-memory.js')
-      if (idx >= 0) return String(p).slice(0, idx).replace(/\\+$/, '')
+      if (idx >= 0) return String(p).slice(0, idx).replace(/\/+$/, '')
     } catch (e) {}
     return ''
   }
@@ -6203,10 +6205,9 @@ function parseAdminJson(text) {
       }
       walkLocal(base)
       for (const rel of Object.keys(manifest.files)) {
-        const abs = p(base, rel)
         const remoteHash = String(manifest.files[rel] || '')
-        // 归一化路径比较（远端用 /，本地可能 \）
-        const normRel = String(rel).replace(/\//g, '\\')
+        // 路径统一 / 分隔（p() 输出即 /；远端清单也是 /）
+        const normRel = String(rel).replace(/\\/g, '/')
         const normAbs = p(base, normRel)
         const localBytes = existsSync(normAbs) ? readFileSync(normAbs) : null
         if (!localBytes) { toUpdate.push({ rel, abs: normAbs }); continue }
@@ -6237,9 +6238,9 @@ function parseAdminJson(text) {
         const buf = Buffer.from(await resp.arrayBuffer())
         const hash = createHash('sha256').update(buf).digest('hex')
         if (hash !== String(manifest.files[f.rel] || '')) { cleanupUpdateCache(tmpDir); return { ok: false, text: '校验失败：' + f.rel + '（哈希不匹配），已清理临时文件，未改动插件' } }
-        const normRelT = f.rel.replace(/\//g, '\\')
+        const normRelT = String(f.rel).replace(/\\/g, '/')
         const tmpAbs = p(tmpDir, normRelT)
-        mkdirSync(tmpAbs.slice(0, Math.max(tmpAbs.lastIndexOf('/'), tmpAbs.lastIndexOf('\\'))), { recursive: true })
+        mkdirSync(tmpAbs.slice(0, tmpAbs.lastIndexOf('/')), { recursive: true })
         writeFileSync(tmpAbs, buf)
         downloaded.push({ rel: f.rel, abs: f.abs, tmpAbs })
       }
@@ -6248,14 +6249,14 @@ function parseAdminJson(text) {
       mkdirSync(bakDir, { recursive: true })
       for (const f of downloaded) {
         if (existsSync(f.abs)) {
-          const bakAbs = p(bakDir, f.rel.replace(/\\/g, '/'))
-          mkdirSync(bakAbs.slice(0, Math.max(bakAbs.lastIndexOf('/'), bakAbs.lastIndexOf('\\'))), { recursive: true })
+          const bakAbs = p(bakDir, String(f.rel).replace(/\\/g, '/'))
+          mkdirSync(bakAbs.slice(0, bakAbs.lastIndexOf('/')), { recursive: true })
           writeFileSync(bakAbs, readFileSync(f.abs))
         }
       }
       // ⑤ 原子覆盖（全部就绪后一次性替换）
       for (const f of downloaded) {
-        mkdirSync(f.abs.slice(0, Math.max(f.abs.lastIndexOf('/'), f.abs.lastIndexOf('\\'))), { recursive: true })
+        mkdirSync(f.abs.slice(0, f.abs.lastIndexOf('/')), { recursive: true })
         writeFileSync(f.abs, readFileSync(f.tmpAbs))
       }
       // ⑥ 清理：临时目录删除；备份只保留最近一份（本次已写入，删除后下次再建）
@@ -6858,6 +6859,14 @@ function parseAdminJson(text) {
   // 后直接 ctx.motionMemoryApi.turnRereview() —— 进程内函数直调，
   // 不走"写请求文件 → 定时器 → 轮询结果文件"的文件接力链路。
   ctx.provide('motionMemoryApi', {
+    // 智能体归属键解析（日志 agent-preset/selected 优先，header 兜底）——供设置界面与记忆页按当前会话智能体读取活跃
+    async resolveOwnerKey(args) {
+      await ready().catch(() => {})
+      const sid = (args && args.sid) || ''
+      if (!sid) return { ok: false, text: '缺少会话 id' }
+      const ownerKey = (await ownerKeyOfAsync(sid)) || ''
+      return { ok: true, ownerKey, text: ownerKey || '（无 preset，会话隔离）' }
+    },
     // 版本检查 / 执行更新（git 绑定安装；供 mm-settings 界面按钮调用）
     async updateCheck(args) {
       await ready().catch(() => {})

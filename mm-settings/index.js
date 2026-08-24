@@ -17,8 +17,16 @@ export function apply(ctx) {
   const state = { sessionCwd: '', lastSid: '' }
 
   function normWs(ws) { return String(ws || '').replace(/\\/g, '/').replace(/\/+$/, '') }
-  // 会话身份键：session.header/meta.agentPreset → preset:<name>（同一 preset 会话共享活跃）；无则 '' 
-  function ownerKeyOfSession(sid) {
+  // 会话身份键：日志 agent-preset/selected 优先（经 motionMemoryApi），header 兜底
+  async function ownerKeyOfSession(sid) {
+    try {
+      // 优先 motion-memory 的日志解析（与对话跟踪/总览同一归属逻辑）
+      const api = ctx.get('motionMemoryApi')
+      if (api && typeof api.resolveOwnerKey === 'function') {
+        const r = await api.resolveOwnerKey({ sid })
+        if (r && r.ok && r.ownerKey) return String(r.ownerKey)
+      }
+    } catch (e) {}
     try {
       const sessions = ctx.get('sessions')
       if (sessions && sid) {
@@ -1276,7 +1284,7 @@ export function apply(ctx) {
         const api = ctx.get('motionMemoryApi')
         if (!api || typeof api.activeSave !== 'function') return { ok: false, text: 'motionMemoryApi 服务不可用' }
         const sidFromClient = String((payload && payload.session) || state.lastSid || '')
-        const ownerFromSession = sidFromClient ? ownerKeyOfSession(sidFromClient) : ''
+        const ownerFromSession = sidFromClient ? await ownerKeyOfSession(sidFromClient) : ''
         const agentKey = ownerFromSession || String((payload && payload.agent) || '').trim() || 'preset_cordis'
         return api.activeSave({
           ownerKey: agentKey,
@@ -1375,7 +1383,7 @@ export function apply(ctx) {
         const api = ctx.get('motionMemoryApi')
         if (!api || typeof api.activeRead !== 'function') return { ok: false, text: 'motionMemoryApi 服务不可用' }
         const sidFromClient = String((payload && payload.session) || state.lastSid || '')
-        const ownerFromSession = sidFromClient ? ownerKeyOfSession(sidFromClient) : ''
+        const ownerFromSession = sidFromClient ? await ownerKeyOfSession(sidFromClient) : ''
         const agentKey = ownerFromSession || String((payload && payload.agent) || '').trim() || 'preset_cordis'
         return api.activeRead({ ownerKey: agentKey, session: sidFromClient })
       }
