@@ -267,8 +267,35 @@ export function apply(ctx) {
   async function writeJson(path, obj) {
     await readJson(path)
     const target = await fs.resolve(path)
+    // 确保父目录存在（补充区/归档按年月分目录，首次写入可能尚无目录）
+    const t = String(target).replace(/\\/g, '/')
+    const sIdx = t.lastIndexOf('/')
+    if (sIdx > 0) {
+      const dir = t.slice(0, sIdx)
+      try { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }) } catch (e) {}
+    }
     await fs.writeText(target, JSON.stringify(obj, null, 1), undefined, undefined, sessionPolicy())
     return path
+  }
+  // 关键词记忆的智能体归属：仅收集 preset:*（真实智能体）；无 preset 归属（界面手动/迁移遗留）返回空数组 = 不受智能体过滤影响
+  function keywordAgentsOf(o) {
+    const out = []
+    const add = (a) => { a = String(a || '').trim(); if (a && a.indexOf('preset:') === 0 && out.indexOf(a) < 0) out.push(a) }
+    if (!o) return out
+    const hist = Array.isArray(o.history) ? o.history : []
+    // 最后一条 keep 的 preset:* 记录优先（归属归并后以此为准）
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const h = hist[i]
+      if (h && h.keep && String(h.agent || '').indexOf('preset:') === 0) { add(h.agent); break }
+    }
+    add(o.createdBy && o.createdBy.agent)
+    add(o.lastModifiedBy && o.lastModifiedBy.agent)
+    // 历史中出现的其他 preset:*（多智能体共同维护）
+    for (let i = 0; i < hist.length; i++) {
+      const a = hist[i] && hist[i].agent
+      if (a) add(a)
+    }
+    return out
   }
   async function tombstone(path, movedTo) { await writeJson(path, { tombstone: true, movedTo, at: nowIso() }) }
   function isTombstone(o) { return !!(o && o.tombstone) }
@@ -1143,7 +1170,7 @@ export function apply(ctx) {
           const links = (o.links && (Array.isArray(o.links.children) || Array.isArray(o.links.parents)))
             ? { children: Array.isArray(o.links.children) ? o.links.children : [], parents: Array.isArray(o.links.parents) ? o.links.parents : [] }
             : { children: [], parents: [] }
-          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score, zone: 'important', links })
+          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score, zone: 'important', links, agents: keywordAgentsOf(o) })
         }
         // ② 周期总结（近 decayDays 天）一并载入
         const decay = Math.max(1, Number(c && c.decayDays) || 30)
@@ -1153,11 +1180,12 @@ export function apply(ctx) {
           if (!o || o.tombstone || o.kind !== 'period') continue
           const at = parseIso(o.createdAt) || parseIso(o.updatedAt) || 0
           if (at && at < cutoff) continue
-          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score: 0, zone: 'period', links: { children: [], parents: [] } })
+          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', score: 0, zone: 'period', links: { children: [], parents: [] }, agents: [] })
         }
         // 按分数降序，同级按更新时间降序（周期 score=0 排在末尾）
         out.sort((a, b) => (b.score - a.score) || (b.updatedAt || '').localeCompare(a.updatedAt || ''))
-        return { ok: true, items: out }
+        const curAgent = (await ownerKeyOfSession(state.lastSid)) || 'preset:cordis'
+        return { ok: true, items: out, currentAgent: curAgent }
       }
       case 'mm-keyword-save': {
         const c = await readCfg()
@@ -1274,10 +1302,46 @@ export function apply(ctx) {
           if (toMs && at > toMs) continue
           if (!oldest || (at && at < oldest)) oldest = at
           if (at > newest) newest = at
-          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', at, zone: 'archive', links: { children: [], parents: [] } })
+          out.push({ path: relOf(f.path, r), title: o.title || '', content: o.content || '', reason: o.reason || '', updatedAt: o.updatedAt || '', at, zone: 'archive', links: { children: [], parents: [] }, agents: keywordAgentsOf(o) })
         }
         out.sort((a, b) => (b.at || 0) - (a.at || 0))
         return { ok: true, items: out, oldestArchiveAt: oldest, newestArchiveAt: newest }
+      }
+      case 'mm-agent-list': {
+        // 全部智能体列表（preset:*），带显示名（agentPresets 元数据 name，兜底 preset id）
+        const c = await readCfg()
+        const r = rootOf(c)
+        const labelOf = {}
+        try {
+          const ap = ctx.get('agentPresets')
+          if (ap && typeof ap.list === 'function') {
+            const presets = await ap.list()
+            for (const p of presets || []) {
+              if (p && p.id) labelOf[p.id] = String(p.name || p.id)
+            }
+          }
+        } catch (e) {}
+        const seen = {}
+        const out = []
+        const add = (key) => {
+          key = String(key || '').trim()
+          if (!key || seen[key] || key.indexOf('preset:') !== 0) return
+          seen[key] = true
+          const pid = key.slice('preset:'.length)
+          out.push({ key, label: labelOf[pid] || pid })
+        }
+        try {
+          const idx = await readJson(p(r, '当前活跃', 'active.json'))
+          if (idx && Array.isArray(idx.agents)) {
+            for (const a of idx.agents) add(a && a.agent)
+          }
+        } catch (e) {}
+        for (const f of await listFiles(p(r, '记忆累积', '重要'), false)) {
+          const o = await readJson(f.path)
+          if (!o || o.tombstone) continue
+          for (const a of keywordAgentsOf(o)) add(a)
+        }
+        return { ok: true, items: out }
       }
       case 'mm-active-save': {
         // 修改当前智能体活跃记忆（v4：custom/keywords/works；直调 motionMemoryApi）

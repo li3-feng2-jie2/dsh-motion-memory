@@ -2071,32 +2071,47 @@ export function apply(ctx) {
     const nec = await readJson(p(necessaryDir(), sid + '.json'))
     // 总览按本智能体归属过滤（只看自己的 + 管理员共享产物；queryOtherAgents 开则全量）
     const ovOwner = cfg().queryOtherAgents ? '' : (ownerKey || sid || '')
-    const important = (await scanDir(importantDir(), false, ovOwner))
-      .map(e => e.obj.title)
-      .sort()
-      .slice(0, 100)
-    const evs = []
-    // v5 定向扫描：按 年/月 目录从新到旧翻，取最近事件（避免全量递归扫全部日期）
-    const now = new Date()
-    const scanMonths = Math.max(1, Number(cfg().indexScore && cfg().indexScore.scanMonths) || 3)
-    for (let i = 0; i < scanMonths && evs.length < 5; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      const ym = String(d.getFullYear()) + '/' + pad(d.getMonth() + 1)
-      const files = await listFiles(p(dailyBaseDir(), ym), false).catch(() => [])
-      files.sort((a, b) => (b.name < a.name ? -1 : b.name > a.name ? 1 : 0))
+    // 重要记忆：按分数排序（创建×3 + 查询×次数 + 更新×2 + 遗忘/捡回×1 + 时间衰减，与关键词页一致）
+    const important = []
+    for (const e of await scanDir(importantDir(), false, ovOwner)) {
+      const o = e.obj
+      const hist = Array.isArray(o.history) ? o.history : []
+      let score = 0
+      for (const h of hist) {
+        const op = h && h.op
+        if (op === 'create') score += 3
+        else if (op === 'query') score += Array.isArray(h.times) && h.times.length ? h.times.length : 1
+        else if (op === 'update') score += 2
+        else if (op === 'forget' || op === 'restore') score += 1
+      }
+      const lastAt = parseIso(o.lastAccessedAt) || lastOpTime(o) || 0
+      if (lastAt) {
+        const ageDays = Math.max(0, (Date.now() - lastAt) / 86400000)
+        const scDecay = Math.max(1, Number(cfg().decayDays) || 30)
+        const floor = Math.max(0.1, Number(cfg().indexScore && cfg().indexScore.floor) || 0.2)
+        score = score * Math.max(floor, 1 - ageDays / scDecay)
+      }
+      important.push({ title: o.title || '', score })
+    }
+    important.sort((a, b) => (b.score - a.score) || String(a.title).localeCompare(String(b.title)))
+    const importantTop = important.slice(0, 100)
+    // 最近会话工作：各智能体活跃文件 works 的最近工作段摘要（条数用 recentOverviewN 设定）
+    const recentWorks = []
+    try {
+      const files = await listFiles(activeDir(), false)
       for (const f of files) {
-        const rel = relOf(f.path)
-        if (!isEventRel(rel)) continue
+        if (f.name === 'active.json' || !f.name.endsWith('.json')) continue
         const o = await readJson(f.path)
-        if (o && !isTombstone(o) && o.kind === 'event') {
-          if (ovOwner) { const ow = ownerOf(o); if (ow && ow !== ovOwner && ow !== 'memory-admin') continue }
-          evs.push(o)
-          if (evs.length >= 5) break
+        if (!o || isTombstone(o)) continue
+        const works = Array.isArray(o.works) ? o.works : []
+        for (const w of works) {
+          if (!w || !String(w.text || '').trim()) continue
+          recentWorks.push({ sid: w.sid || '', text: String(w.text || '').slice(0, 120), updatedAt: w.updatedAt || o.updatedAt || '' })
         }
       }
-    }
-    evs.sort((a, b) => parseIso(b.createdAt) - parseIso(a.createdAt))
-    const recent = evs.slice(0, 5).map(o => ({ title: o.title, createdAt: o.createdAt }))
+    } catch (e) {}
+    recentWorks.sort((a, b) => parseIso(b.updatedAt) - parseIso(a.updatedAt))
+    const worksTop = recentWorks.slice(0, Math.max(1, Number(cfg().recentOverviewN) || 3))
     // 本智能体活跃关键词（注入给模型：当前活跃主题词，随总览自动载入）
     let keywords = []
     let blankWorks = []
@@ -2115,8 +2130,8 @@ export function apply(ctx) {
     const inc = activeIncident()
     return {
       necessary: (nec && nec.content) || '',
-      important,
-      recent,
+      important: importantTop,
+      recentWorks: worksTop,
       keywords,
       blankWorks,
       incident: inc ? { id: inc.id, at: inc.at, targetTime: inc.targetTime, files: (inc.files || []).length } : null,
@@ -2125,8 +2140,8 @@ export function apply(ctx) {
 
   function overviewDigest(entries) {
     // digest 只含低频变化内容：必要记忆 + 重要记忆标题 + 活跃关键词 + 隔离状态。
-    // 最近事件不参与 digest——事件频繁产生（对话跟踪等），若计入会导致
-    // 每有新事件就重注入总览。需要最新事件时 agent 自行调 memory_query。
+    // 最近会话工作不参与 digest——工作段频繁变化（对话跟踪等），若计入会导致
+    // 每有新记录就重注入总览。需要最新记录时 agent 自行调 memory_query。
     const canonical = JSON.stringify({
       necessary: entries.necessary,
       important: entries.important,
@@ -2137,17 +2152,27 @@ export function apply(ctx) {
   }
 
   function renderOverview(entries) {
+    const trackOn = !!(cfg().admin && cfg().admin.track)
     const lines = [
       '<system-reminder>',
       '运动记忆·会话总览（仅当记忆变化时更新；需要细节时用 memory_query 查看）：',
       '必要记忆：' + (entries.necessary || '（无）'),
-      '重要记忆（' + entries.important.length + ' 条）：' + (entries.important.length ? entries.important.join('；') : '（无）'),
+      '重要记忆（' + entries.important.length + ' 条）：' + (entries.important.length ? entries.important.map(t => t.title).join('；') : '（无）'),
     ]
     if (entries.keywords && entries.keywords.length) lines.push('当前活跃关键词：' + entries.keywords.join('、'))
+    // 待总结提醒：区分对话跟踪状态——未开启：大段工作完成后自行总结；已开启：跟踪自动总结，不需全部自行总结
+    if (!trackOn) {
+      lines.push('⚠ 本会话未开启对话跟踪：大段工作完成后请自行总结记录——把总结写入当前会话工作（works）；若该会话尚无对应的事件记忆，同时创建事件记忆记录同样的轮次总结。')
+    } else {
+      lines.push('本会话已开启对话跟踪：轮次总结由跟踪自动处理，不需要全部都自行总结；用户明确要求时仍可总结记录记忆。')
+    }
     if (entries.blankWorks && entries.blankWorks.length) lines.push('⚠ 待总结提醒：会话 ' + entries.blankWorks.join('、') + ' 的工作段仍为空白（模型总结未成功或等待转正），需要总结补全。')
-    if (entries.recent.length) lines.push('最近事件：' + entries.recent.map(o => o.title).join('；'))
+    if (entries.recentWorks && entries.recentWorks.length) {
+      lines.push('最近会话工作：' + entries.recentWorks.map(w => (w.sid ? '[' + String(w.sid).slice(-8) + '] ' : '') + w.text).join('；'))
+    }
+    // 隔离通知并入必要记忆区显示
     if (entries.incident) {
-      lines.push('⚠ 隔离通知：事件 ' + entries.incident.id + ' 于 ' + entries.incident.at + ' 触发，目标时间 ' + entries.incident.targetTime + '，涉及 ' + entries.incident.files + ' 个文件。可调用 memory（cmd=isolation_restore，回滚）或 memory（cmd=isolation_clear，解除）。')
+      lines.push('必要记忆·隔离通知：事件 ' + entries.incident.id + ' 于 ' + entries.incident.at + ' 触发，目标时间 ' + entries.incident.targetTime + '，涉及 ' + entries.incident.files + ' 个文件。可调用 memory（cmd=isolation_restore，回滚）或 memory（cmd=isolation_clear，解除）。')
     }
     // 使用指引（行为引导，解决"调用频率低"）：
     lines.push('记忆使用约定：')
@@ -2164,7 +2189,7 @@ export function apply(ctx) {
         entries: {
           necessary: entries.necessary,
           important: entries.important,
-          recent: entries.recent,
+          recent: [],
           keywords: entries.keywords || [],
           incidentId: entries.incident ? entries.incident.id : null,
         },
@@ -2177,8 +2202,7 @@ export function apply(ctx) {
     const e = source.entries
     if (!e || typeof e !== 'object') return undefined
     if (typeof e.necessary !== 'string' || !Array.isArray(e.important) || !Array.isArray(e.recent)) return undefined
-    for (const t of e.important) if (typeof t !== 'string') return undefined
-    for (const r of e.recent) if (!r || typeof r.title !== 'string' || typeof r.createdAt !== 'string') return undefined
+    for (const t of e.important) if (!t || typeof t.title !== 'string') return undefined
     return {
       necessary: e.necessary,
       important: e.important,
@@ -5480,6 +5504,16 @@ function parseAdminJson(text) {
       if (rangeFrom && created < rangeFrom) continue
       if (rangeTo && created > rangeTo) continue
       evs.push({ obj: o, path: f.path, rel: relOf(f.path), isNoModel: true })
+    }
+    // v6：补充区（移动到补充的关键词）纳入周期总结素材——被遗忘/移补充的内容周期总结也要覆盖
+    for (const f of await listFiles(p(root(), '记忆累积', '补充'), true)) {
+      const o = await readJson(f.path)
+      if (!o || isTombstone(o) || o.kind !== 'keyword') continue
+      if (!ignoreSummarized && o.summarizedAt) continue
+      const created = parseIso(o.updatedAt) || parseIso(o.createdAt) || 0
+      if (rangeFrom && created < rangeFrom) continue
+      if (rangeTo && created > rangeTo) continue
+      evs.push({ obj: o, path: f.path, rel: relOf(f.path), isArchive: true })
     }
     // 素材档位是否包含无模型：scope1 档位 'events' 排除；其余包含
     const includeNoModel = !(scope === 1 && scopeDetail === 'events')
