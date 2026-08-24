@@ -153,7 +153,18 @@ export function apply(ctx) {
     return out
   }
   function readJsonFileNative(filePath) {
-    try { if (!existsSync(filePath)) return undefined; return JSON.parse(readFileSync(filePath, 'utf8')) } catch (e) { return undefined }
+    try {
+      if (!existsSync(filePath)) return undefined
+      let text = readFileSync(filePath, 'utf8')
+      // 剥离 UTF-8 BOM（Windows PowerShell Set-Content -Encoding UTF8 会写入 BOM，JSON.parse 会失败）
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1)
+      return JSON.parse(text)
+    } catch (e) { return undefined }
+  }
+  // 远端 JSON 解析（BOM 剥离）：GitHub raw 可能返回带 BOM 的内容
+  async function parseRemoteJson(resp) {
+    const text = String(await resp.text())
+    return JSON.parse(text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text)
   }
   // 统计一个记忆根下的记忆文件数（重要 + 补充 + 事件），用于迁移时选数据最丰富的旧配置
   function memoryFileCount(rootPath) {
@@ -6114,7 +6125,7 @@ function parseAdminJson(text) {
     try {
       const r = await fetch('https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/package.json', { signal: AbortSignal.timeout(15000) })
       if (r && r.ok) {
-        const rj = await r.json()
+        const rj = await parseRemoteJson(r)
         remoteVer = (rj && rj.version) || ''
         remoteUrl = (rj && rj.repository && rj.repository.url) ? String(rj.repository.url).replace(/^git\+/, '').replace(/\.git$/, '') : UPDATE_PROJECT_URL
       }
@@ -6128,7 +6139,7 @@ function parseAdminJson(text) {
       try {
         const mf = await fetch('https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/MANIFEST.json', { signal: AbortSignal.timeout(20000) })
         if (mf && mf.ok) {
-          const manifest = await mf.json()
+          const manifest = await parseRemoteJson(mf)
           if (manifest && manifest.files && typeof manifest.files === 'object') {
             const base = pluginDir()
             const missing = [], changed = [], extra = []
@@ -6183,7 +6194,7 @@ function parseAdminJson(text) {
       // ① 拉远端 MANIFEST
       const mf = await fetch('https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/MANIFEST.json', { signal: AbortSignal.timeout(20000) })
       if (!mf || !mf.ok) return { ok: false, text: '无法获取远端文件清单（MANIFEST.json），请检查网络' }
-      const manifest = await mf.json()
+      const manifest = await parseRemoteJson(mf)
       const remoteVer = String((manifest && manifest.version) || '')
       if (!remoteVer || !manifest.files || typeof manifest.files !== 'object') return { ok: false, text: '远端文件清单格式无效' }
       const localPkg = readJsonFileNative(p(base, 'package.json'))
