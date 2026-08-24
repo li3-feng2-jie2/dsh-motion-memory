@@ -655,6 +655,30 @@ export function apply(ctx) {
     const preset = sessionPresetOf(agentOrSession)
     return preset ? 'preset:' + preset : ''
   }
+  // 异步版：从会话日志取最新 agent-preset/selected（会话空白期切换智能体的实际运行 preset，
+  // DSH 以日志为准而非 header——header 保留创建时的值）。header 兜底，读不到日志回退同步逻辑。
+  async function sessionPresetOfAsync(sid) {
+    try {
+      const events = await readSessionEvents(sid)
+      if (Array.isArray(events) && events.length) {
+        let selected = ''
+        for (const e of events) {
+          if (e && e.type === 'agent-preset/selected' && e.data && e.data.agentPreset) selected = String(e.data.agentPreset)
+        }
+        if (selected) return selected
+      }
+    } catch (e) {}
+    try {
+      const s = sid && { header: {} }
+      // 直接读日志失败时回退：构造 header 查询（session 对象路径不可得时返回空）
+    } catch (e2) {}
+    return ''
+  }
+  // 异步版 ownerKey：日志优先（agent-preset/selected），header 兜底
+  async function ownerKeyOfAsync(sid) {
+    const preset = await sessionPresetOfAsync(sid)
+    return preset ? 'preset:' + preset : ''
+  }
   // 旧记忆归属归并（一次性）：把 owner 为 session-xxx 的历史记忆迁移到当前 preset 名下，
   // 使同一智能体（preset）的新会话能看到上一个会话创建的记忆
   let legacyMerged = false
@@ -2191,7 +2215,7 @@ export function apply(ctx) {
       if (history.published) return decision
       const existing = overviewMessage(decision.messages)
       if (existing !== undefined) return decision
-      const ownerKey = ownerKeyOf(agent)
+      const ownerKey = (await ownerKeyOfAsync(sid)) || ownerKeyOf(agent)
       if (ownerKey) await mergeLegacyOwners(ownerKey).catch(() => {})
       const entries = await overviewEntries(sid, ownerKey || sid)
       // 无记忆也注入（携带使用指引，引导新会话产生记忆）——空总览不再是噪音
@@ -2329,7 +2353,7 @@ export function apply(ctx) {
         // 归属键：preset:<agentPreset>（同一智能体跨会话共享记忆）；无 preset 回退会话 id
         let agentId = ''
         try {
-          if (agent) agentId = ownerKeyOf(agent) || String(agent.id || (agent.session && agent.session.id) || '')
+          if (agent) agentId = (await ownerKeyOfAsync(session)) || ownerKeyOf(agent) || String(agent.id || (agent.session && agent.session.id) || '')
         } catch (e) {}
         // v4 #5：注入模型溯源（模型功能=当前工具名，模型名称=会话默认模型）
         let modelProvider = '', modelName = ''
@@ -4619,16 +4643,16 @@ function parseAdminJson(text) {
     } catch (e) { console.error('[motion-memory] 懒归档失败: ' + (e && e.message)) }
   }
   // 注册 turn/end 触发（后台执行不阻塞）
-  ctx.on('session/event', (session, event) => {
+  ctx.on('session/event', async (session, event) => {
     if (!session || !event || event.type !== 'turn/end') return
     const sid = session.id
     const d2 = (event && event.data) || {}
     const turn = d2.turn || 0
     if (!sid || !turn) return
-    // 解析 ownerKey（preset:cordis）——对话跟踪的摘要归本智能体活跃文件
+    // 解析 ownerKey（日志 agent-preset/selected 优先，header 兜底）——对话跟踪的摘要归本智能体活跃文件
     let ownerKey = ''
     try {
-      const preset = sessionPresetOf(session)
+      const preset = (await sessionPresetOfAsync(sid)) || sessionPresetOf(session)
       if (preset) ownerKey = 'preset:' + preset
     } catch (e) {}
     const meta = { agent: ownerKey || sid, session: sid, turn, ownerKey: ownerKey || sid }
