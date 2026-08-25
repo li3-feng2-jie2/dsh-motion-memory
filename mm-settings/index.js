@@ -322,6 +322,18 @@ export function apply(ctx) {
     const h = (o.history || [])
     return h.length ? h[h.length - 1] : null
   }
+  // 记忆文件归属：createdBy/lastModifiedBy agent 优先，history 兜底（与 motion-memory 一致）
+  function ownerOf(obj) {
+    if (!obj) return ''
+    const c = obj.createdBy || obj.lastModifiedBy
+    if (c && c.agent) return String(c.agent)
+    const h = obj.history
+    if (Array.isArray(h) && h.length) {
+      for (const e of h) { if (e && e.agent) return String(e.agent) }
+      for (const e of h) { if (e && e.session) return String(e.session) }
+    }
+    return ''
+  }
   function splitParagraphs(text) {
     return String(text || '').split(/\r?\n/).map(s => s.trim()).filter(s => s !== '')
   }
@@ -482,6 +494,7 @@ export function apply(ctx) {
           periodTruncK: period.truncK || 2,
           periodEconomize: period.economize || 'none',
           periodSkipRecent: (period.skipRecentDays === undefined || period.skipRecentDays === null) ? 14 : period.skipRecentDays,
+          periodAgents: Array.isArray(period.agents) ? period.agents.map(String) : [],
         },
       },
     }
@@ -509,6 +522,8 @@ export function apply(ctx) {
       durationText = (args.months || 0) + '月' + (args.days || 0) + '日' + (args.hours || 0) + '时' + (args.minutes || 0) + '分' + (args.seconds || 0) + '秒'
     }
     const files = []
+    // 指定智能体隔离：agents 非空 → 只隔离归属为这些智能体的记忆文件；空 = 全部
+    const agents = Array.isArray(args && args.agents) ? args.agents.map(String).filter(Boolean) : []
     for (const f of await listFiles(dailyBaseDirOf(r), true)) {
       const rel = relOf(f.path, r)
       if (/^必要\//.test(rel)) continue
@@ -516,7 +531,13 @@ export function apply(ctx) {
       if (!o || isTombstone(o)) continue
       const created = parseIso(o.createdAt)
       const last = lastOpTime(o)
-      if (last > tMs || created > tMs) files.push({ rel, created, last, op: lastOp(o), createdAfter: created > tMs })
+      if (last > tMs || created > tMs) {
+        if (agents.length) {
+          const ow = ownerOf(o)
+          if (!ow || agents.indexOf(ow) < 0) continue
+        }
+        files.push({ rel, created, last, op: lastOp(o), createdAfter: created > tMs })
+      }
     }
     if (!files.length) return { ok: true, text: '目标时间 ' + isoStr(tMs) + ' 之后没有任何操作记录，无需隔离' }
     const id = stamp()
@@ -665,7 +686,7 @@ export function apply(ctx) {
             if (pa.enhance !== undefined) a.enhance.enabled = !!pa.enhance
             if (pa.enhanceMaxDepth !== undefined) a.enhance.maxExpandDepth = Number(pa.enhanceMaxDepth)
           }
-          if (pa.period !== undefined || pa.periodDays !== undefined || pa.periodHours !== undefined || pa.periodMultiWindow !== undefined || pa.periodUseTools !== undefined || pa.periodImpactPercent !== undefined || pa.periodImpactCount !== undefined || pa.periodModel !== undefined || pa.periodSessionBounds !== undefined || pa.periodMemFiles !== undefined || pa.periodSkipRecent !== undefined) {
+          if (pa.period !== undefined || pa.periodDays !== undefined || pa.periodHours !== undefined || pa.periodMultiWindow !== undefined || pa.periodUseTools !== undefined || pa.periodImpactPercent !== undefined || pa.periodImpactCount !== undefined || pa.periodModel !== undefined || pa.periodSessionBounds !== undefined || pa.periodMemFiles !== undefined || pa.periodSkipRecent !== undefined || pa.periodAgents !== undefined) {
             a.period = a.period || {}
             if (pa.period !== undefined) a.period.enabled = !!pa.period
             if (pa.periodDays !== undefined) a.period.intervalDays = Number(pa.periodDays)
@@ -676,7 +697,8 @@ export function apply(ctx) {
             if (pa.periodImpactCount !== undefined) a.period.impactCount = Number(pa.periodImpactCount)
             if (pa.periodSessionBounds !== undefined) a.period.sessionBounds = !!pa.periodSessionBounds
             if (pa.periodMemFiles !== undefined) a.period.memFiles = !!pa.periodMemFiles
-            if (pa.periodSkipRecent !== undefined) a.period.skipRecentDays = Math.max(7, Number(pa.periodSkipRecent) || 14)
+            if (pa.periodSkipRecent !== undefined) a.period.skipRecentDays = Math.max(14, Number(pa.periodSkipRecent) || 14)
+            if (pa.periodAgents !== undefined) a.period.agents = Array.isArray(pa.periodAgents) ? pa.periodAgents.map(String).filter(x => x && String(x).indexOf('preset:') === 0) : []
           }
           const hasModel = !!(a.model && a.model.provider && a.model.model)
           if (hasModel !== !!a.enabled) { a.enabled = hasModel; changed = true }
@@ -938,7 +960,17 @@ export function apply(ctx) {
         for (const it of items) {
           if (!it.title) it.title = await readSessionTitleFromLog(it.sid)
         }
-        const data = { items, globalRange: gMin ? { from: gMin, to: gMax || gMin } : null }
+        // 会话归属智能体（日志 agent-preset 解析）：无归属 = 子会话/非预设会话，不列入会话列表
+        // （子会话不做记忆记录；主会话可经历史聊天推断其完成情况，需要时仍可用 memory_query 查询内容）
+        const withAgent = []
+        const ags = await Promise.all(items.map(it => ownerKeyOfSession(it.sid).catch(() => '')))
+        for (let i = 0; i < items.length; i++) {
+          const ag = ags[i] || ''
+          if (!ag) continue
+          items[i].agent = ag
+          withAgent.push(items[i])
+        }
+        const data = { items: withAgent, globalRange: gMin ? { from: gMin, to: gMax || gMin } : null }
         state.mmCache = state.mmCache || {}
         state.mmCache[cacheKey] = { at: Date.now(), data }
         return { ok: true, ...data }
@@ -1449,12 +1481,12 @@ export function apply(ctx) {
         return api.updateApply()
       }
       case 'mm-active-read': {
-        // 活跃记忆与轮次总结同源：优先按 session 解析 ownerKey（preset），回退 payload.agent
+        // 活跃记忆：指定智能体优先（活跃页单选）；否则按当前会话解析
         const api = ctx.get('motionMemoryApi')
         if (!api || typeof api.activeRead !== 'function') return { ok: false, text: 'motionMemoryApi 服务不可用' }
         const sidFromClient = String((payload && payload.session) || state.lastSid || '')
         const ownerFromSession = sidFromClient ? await ownerKeyOfSession(sidFromClient) : ''
-        const agentKey = ownerFromSession || String((payload && payload.agent) || '').trim() || 'preset_cordis'
+        const agentKey = String((payload && payload.agent) || '').trim() || ownerFromSession || 'preset_cordis'
         return api.activeRead({ ownerKey: agentKey, session: sidFromClient })
       }
       case 'mm-turn-resummarize': {
@@ -1517,6 +1549,16 @@ export function apply(ctx) {
           const t = parseIso(o.createdAt) || 0
           if (from && t < from) continue
           if (to && t > to) continue
+          // 周期归属智能体：ownerKey（新文件）+ 覆盖事件的归属（旧文件无 ownerKey 时兜底）
+          const pAgents = []
+          const pAdd = (a) => { a = String(a || '').trim(); if (a && a.indexOf('preset:') === 0 && pAgents.indexOf(a) < 0) pAgents.push(a) }
+          if (o.ownerKey) pAdd(o.ownerKey)
+          if (!pAgents.length) {
+            for (const rel of (o.coveredEvents || [])) {
+              const eo = await readJson(p(r, String(rel).replace(/^\/+/, '')))
+              if (eo && !eo.tombstone) pAdd(ownerOf(eo))
+            }
+          }
           out.push({
             path: relOf(f.path, r), title: o.title || '', content: o.content || '',
             createdAt: o.createdAt || '', trigger: o.trigger || '',
@@ -1524,6 +1566,8 @@ export function apply(ctx) {
             covered: (o.coveredEvents || []).length, coveredEvents: o.coveredEvents || [],
             sessionTurns: o.sessionTurns || [],
             createdBy: o.createdBy || null,
+            ownerKey: o.ownerKey || '',
+            agents: pAgents,
           })
         }
         out.sort((a, b) => parseIso(b.createdAt) - parseIso(a.createdAt))

@@ -362,6 +362,26 @@ window.__ModuleLoader__.load({
       var state9 = React.useState(toLocalInput(new Date(Date.now() - 3600000)))
       var targetTime = state9[0]
       var setTargetTime = state9[1]
+      // 隔离目标智能体选择：空=隔离全部；选了只隔离这些智能体的记忆文件
+      var isoAgentsS = React.useState([])
+      var isoAgents = isoAgentsS[0]
+      var setIsoAgents = isoAgentsS[1]
+      var isoAgentsListS = React.useState([])
+      var isoAgentsList = isoAgentsListS[0]
+      var setIsoAgentsList = isoAgentsListS[1]
+      var isoPickOpenS = React.useState(false)
+      var isoPickOpen = isoPickOpenS[0]
+      var setIsoPickOpen = isoPickOpenS[1]
+      var isoPickSelS = React.useState({})
+      var isoPickSel = isoPickSelS[0]
+      var setIsoPickSel = isoPickSelS[1]
+      // 周期总结智能体选择弹窗：空=全部（统一时间周期，各智能体各生成自己的周期总结）
+      var periodPickOpenS = React.useState(false)
+      var periodPickOpen = periodPickOpenS[0]
+      var setPeriodPickOpen = periodPickOpenS[1]
+      var periodPickSelS = React.useState({})
+      var periodPickSel = periodPickSelS[0]
+      var setPeriodPickSel = periodPickSelS[1]
       var state10 = React.useState(false)
       var resetPeriodTimer = state10[0]
       var setResetPeriodTimer = state10[1]
@@ -402,6 +422,7 @@ window.__ModuleLoader__.load({
           callHost('diag', {}),
           callHost('models', {}),
           callHost('mm-update-check', {}),
+          callHost('mm-agent-list', {}),
         ]).then(function (rs) {
           setCfg(rs[0].config || null)
           setIncidents((rs[1].incidents) || [])
@@ -409,6 +430,7 @@ window.__ModuleLoader__.load({
           setDiag(rs[3])
           setProviders(rs[4].providers || [])
           setUpdateInfo(rs[5] || { text: '（版本信息不可用）' })
+          setIsoAgentsList((rs[6] && rs[6].items) || [])
         }).catch(function (e) { setMsg('读取失败: ' + String((e && e.message) || e)) })
       }, [])
       React.useEffect(function () { refresh() }, [refresh])
@@ -478,9 +500,9 @@ window.__ModuleLoader__.load({
         var t = new Date(targetTime)
         if (Number.isNaN(t.getTime())) { setMsg('请先填写回溯目标时间'); return }
         if (t.getTime() > Date.now()) { setMsg('目标时间不能晚于当前时间'); return }
-        askConfirm('确定要触发记忆隔离并回溯到 ' + toLocalInput(t) + ' 吗？\n将快照受影响记忆的当前污染态到隔离文件夹，可随时回滚。', function () {
+        askConfirm('确定要触发记忆隔离并回溯到 ' + toLocalInput(t) + ' 吗？' + (isoAgents.length ? '\n仅隔离智能体：' + isoAgents.map(function (a) { return a.label || a.key || a }).join('、') + ' 的记忆文件' : '\n将隔离全部智能体的记忆文件') + '\n快照受影响记忆的当前污染态到隔离文件夹，可随时回滚。', function () {
           setBusy(true)
-          callHost('isolation', { targetTime: t.toISOString() }).then(function (r) {
+          callHost('isolation', { targetTime: t.toISOString(), agents: isoAgents.map(function (a) { return a.key }) }).then(function (r) {
             setMsg(r.ok === false ? (r.text || '隔离失败') : '隔离已触发：' + (r.id || '') + '（' + (r.text || '').slice(0, 300) + '）')
             refresh()
           }).catch(function (e) { setMsg('隔离失败: ' + String((e && e.message) || e)) })
@@ -525,7 +547,7 @@ window.__ModuleLoader__.load({
           Row('增量历史显示条数', Num({ value: cfg.updateHistoryN || 0, onChange: function (e) { set('updateHistoryN', Number(e.target.value) || 0) } }), '查看记忆时附带最近 n 条更新记录；0=不附带'),
           Row('历史分页条数', Num({ value: cfg.historyPageSize || 20, onChange: function (e) { set('historyPageSize', Number(e.target.value) || 20) } }), '查看全部历史时每页加载 n 条'),
           Row('读取截断字符（每侧）', Num({ value: cfg.readTrimChars || 500, onChange: function (e) { set('readTrimChars', Number(e.target.value) || 500) } }), '读取长文本时只保留开头+结尾各 N 字符，中间省略（默认 500）'),
-          Row('跨智能体查询', Check({ checked: !!cfg.queryOtherAgents, onChange: function (e) { set('queryOtherAgents', e.target.checked) } }), '开=查询/总览可读取其他智能体的记忆；关（默认）=只查本智能体的记忆'),
+          Row('跨智能体查询', Check({ checked: !!cfg.queryOtherAgents, onChange: function (e) { set('queryOtherAgents', e.target.checked) } }), '开=可跨智能体查询：先列出有哪些其他智能体的记忆（memory_query agents），再指定智能体（ownerKey=preset:xxx）或全部（ownerKey=all）定向查询；关（默认）=只查本智能体'),
         ),
         Collapse({ title: '活跃索引（得分参数）', hint: '初始分 / 衰减 / 淘汰', defaultOpen: false },
           React.createElement('div', { style: subHintStyle }, '活跃索引 active.json 的引用得分参数：初始分（周期/事件/关键词）+ 衰减下限 + 淘汰阈值。'),
@@ -655,7 +677,7 @@ window.__ModuleLoader__.load({
             Num({ value: adm.periodHours || 0, onChange: function (e) { setA('periodHours', Number(e.target.value) || 0) } }),
             React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '时'),
           ), countdown ? React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, countdown) : null),
-          Row('最近素材跳过天数', Num({ value: adm.periodSkipRecent === undefined || adm.periodSkipRecent === null ? 14 : adm.periodSkipRecent, min: 7, onChange: function (e) { setA('periodSkipRecent', Math.max(7, Number(e.target.value) || 14)) } }), '最近 N 天的事件素材不参与周期总结（默认 14，最小 7）——保证近期记忆保持"热"状态不被过早压缩，会话工作段仅被 N 天前的周期总结下沉'),
+          Row('最近素材跳过天数', Num({ value: adm.periodSkipRecent === undefined || adm.periodSkipRecent === null ? 14 : adm.periodSkipRecent, min: 14, onChange: function (e) { setA('periodSkipRecent', Math.max(14, Number(e.target.value) || 14)) } }), '最近 N 天的事件素材不参与周期总结（默认 14，**最小 14**）；可总结窗口 = [最近 N 天前 ~ 最近 7 天前]，最近 7 天固定不压缩（保持近期记忆"热"），窗口内无可总结内容时自动放弃本次周期'),
           Row('周期影响度', React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
             Num({ value: (adm.periodImpactCount && adm.periodImpactCount > 0) ? adm.periodImpactCount : adm.periodImpactPercent || 100, onChange: function (e) {
               if (adm.periodImpactCount && adm.periodImpactCount > 0) { setA('periodImpactCount', Math.max(1, Math.round(Number(e.target.value) || 1))) }
@@ -704,6 +726,25 @@ window.__ModuleLoader__.load({
               (function () { var v = adm.periodEconomize; return Array.isArray(v) ? v.indexOf('truncated') >= 0 : v === 'truncated' })() ? Row('末尾保留量', KNum({ value: (adm.periodTruncK || 2) * 1000, onChange: function (v) { setA('periodTruncK', Math.round(v / 1000) || 1) } }), 'k token') : null,
             ) : null,
             Row('工具记忆参与总结', Check({ checked: (adm.periodUseTools === undefined ? true : !!adm.periodUseTools), onChange: function (e) { setA('periodUseTools', e.target.checked) } }), '是否把工具产生的记忆纳入周期总结素材（默认开）'),
+            Row('周期智能体（空=全部）', React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', flex: 1 } },
+              (adm.periodAgents && adm.periodAgents.length)
+                ? adm.periodAgents.map(function (a) {
+                    var lb = a
+                    for (var i = 0; i < isoAgentsList.length; i++) { if (isoAgentsList[i] && isoAgentsList[i].key === a) { lb = isoAgentsList[i].label || a; break } }
+                    return React.createElement('span', { key: a, style: { display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 4, fontSize: 11, background: 'var(--dsw-alias-bg-layer-1)' } },
+                      React.createElement('span', {}, lb),
+                      React.createElement('a', { href: 'javascript:void(0)', title: '移除（恢复为全部）', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer', fontWeight: 700 }, onClick: function (e) { e.stopPropagation(); setA('periodAgents', (adm.periodAgents || []).filter(function (x) { return x !== a })) } }, '×'),
+                    )
+                  })
+                : React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '未选择 = 全部智能体'),
+              React.createElement('button', { style: mmBtn, title: '多选智能体（只做这些智能体的周期总结）', onClick: function () {
+                var init = {}
+                var cur = adm.periodAgents || []
+                for (var i = 0; i < cur.length; i++) init[cur[i]] = true
+                setPeriodPickSel(init)
+                setPeriodPickOpen(true)
+              } }, '+'),
+            ), '空=全部智能体（统一时间周期，各智能体各生成自己的周期总结）；选中 = 只做这些智能体；周期文件自动标识所属智能体'),
           ),
           React.createElement('div', { style: { marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 } },
             Button({ disabled: busy, onClick: function () { doPeriodRun() } }, '立刻执行周期总结'),
@@ -718,6 +759,26 @@ window.__ModuleLoader__.load({
         Row('回溯到（年月日时间）', React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
           React.createElement('input', { type: 'datetime-local', style: inputStyle, value: targetTime, max: toLocalInput(new Date()), onChange: function (e) { setTargetTime(e.target.value) } }),
           React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '（不超过当前时间）'))),
+        // 指定智能体隔离：空=隔离全部；选了只隔离这些智能体的记忆文件
+        React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12 } },
+          React.createElement('span', { style: { width: 170, flexShrink: 0, color: 'var(--dsw-alias-label-secondary)' } }, '仅隔离智能体（空=全部）'),
+          React.createElement('div', { style: { flex: 1, display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', minWidth: 200 } },
+            isoAgents.length
+              ? isoAgents.map(function (a) {
+                  return React.createElement('span', { key: a.key, style: { display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 4, fontSize: 11, background: 'var(--dsw-alias-bg-layer-1)' } },
+                    React.createElement('span', {}, a.label || a.key),
+                    React.createElement('a', { href: 'javascript:void(0)', title: '移除（恢复为全部）', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer', fontWeight: 700 }, onClick: function (e) { e.stopPropagation(); setIsoAgents(isoAgents.filter(function (x) { return x.key !== a.key })) } }, '×'),
+                  )
+                })
+              : React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '未选择 = 隔离全部智能体的记忆文件'),
+            React.createElement('button', { style: mmBtn, title: '多选智能体（只隔离这些智能体的记忆）', onClick: function () {
+              var init = {}
+              for (var i = 0; i < isoAgents.length; i++) init[isoAgents[i].key] = true
+              setIsoPickSel(init)
+              setIsoPickOpen(true)
+            } }, '+'),
+          ),
+        ),
         React.createElement('div', { style: { marginTop: 6 } }, React.createElement('button', { style: dangerStyle, disabled: busy, onClick: doIsolation }, '⚠ 触发隔离（快照并回溯到指定时间）')),
         React.createElement('div', { style: { marginTop: 10 } },
           incidents.length === 0 ? React.createElement('div', { style: msgStyle }, '（无隔离事件）') : incidents.map(function (inc) { return React.createElement('div', { key: inc.id, style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, fontSize: 12 } },
@@ -793,6 +854,76 @@ window.__ModuleLoader__.load({
             React.createElement('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
               React.createElement('button', { style: btnStyle, onClick: function () { setConfirmState(null) } }, '取消'),
               React.createElement('button', { style: dangerStyle, onClick: function () { var fn = confirmState.onConfirm; setConfirmState(null); if (fn) fn() } }, '确认'),
+            ),
+          ),
+        ) : null,
+        // 隔离目标智能体多选弹窗：空=全部；确认=只隔离选中的
+        isoPickOpen ? React.createElement('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99998 }, onClick: function (e) { if (e.target === e.currentTarget) setIsoPickOpen(false) } },
+          React.createElement('div', { style: { background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, maxWidth: 420, width: '90%', maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: 16 } },
+            React.createElement('div', { style: { fontSize: 14, fontWeight: 600, marginBottom: 10, borderBottom: '1px solid var(--dsw-alias-border-l1)', paddingBottom: 8 } }, '选择智能体（隔离目标）'),
+            React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginBottom: 8 } }, '勾选后点「确认」，只隔离这些智能体的记忆文件；不勾选任何 = 隔离全部（当前选择的默认勾选，可取消）。'),
+            React.createElement('div', { style: { flex: 1, overflowY: 'auto', marginBottom: 12 } },
+              isoAgentsList.length
+                ? isoAgentsList.map(function (a) {
+                    var key = a && a.key
+                    var checked = !!isoPickSel[key]
+                    return React.createElement('label', { key: key, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', fontSize: 12, cursor: 'pointer' } },
+                      Check({ checked: checked, onChange: function (e) {
+                        setIsoPickSel(function (prev) {
+                          var m = Object.assign({}, prev || {})
+                          if (e.target.checked) m[key] = true
+                          else delete m[key]
+                          return m
+                        })
+                      } }),
+                      React.createElement('span', {}, a.label || key),
+                    )
+                  })
+                : React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, '（加载智能体列表…）'),
+            ),
+            React.createElement('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
+              React.createElement('button', { style: btnStyle, onClick: function () { setIsoPickOpen(false) } }, '取消'),
+              React.createElement('button', { style: btnStyle, onClick: function () {
+                var sel = isoAgentsList.filter(function (a) { return isoPickSel[a.key] })
+                setIsoAgents(sel)
+                setIsoPickOpen(false)
+                setMsg(sel.length ? ('隔离目标：' + sel.length + ' 个智能体') : '隔离目标：全部智能体')
+              } }, '确认'),
+            ),
+          ),
+        ) : null,
+        // 周期总结智能体多选弹窗：空=全部（统一时间周期，各智能体各生成自己的周期总结）
+        periodPickOpen ? React.createElement('div', { style: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99997 }, onClick: function (e) { if (e.target === e.currentTarget) setPeriodPickOpen(false) } },
+          React.createElement('div', { style: { background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, maxWidth: 420, width: '90%', maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: 16 } },
+            React.createElement('div', { style: { fontSize: 14, fontWeight: 600, marginBottom: 10, borderBottom: '1px solid var(--dsw-alias-border-l1)', paddingBottom: 8 } }, '选择智能体（周期总结）'),
+            React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginBottom: 8 } }, '勾选后点「确认」，只做这些智能体的周期总结；不勾选任何 = 全部智能体（当前选择的默认勾选，可取消）。每个智能体各生成自己的周期总结文件。'),
+            React.createElement('div', { style: { flex: 1, overflowY: 'auto', marginBottom: 12 } },
+              isoAgentsList.length
+                ? isoAgentsList.map(function (a) {
+                    var key = a && a.key
+                    var checked = !!periodPickSel[key]
+                    return React.createElement('label', { key: key, style: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 2px', fontSize: 12, cursor: 'pointer' } },
+                      Check({ checked: checked, onChange: function (e) {
+                        setPeriodPickSel(function (prev) {
+                          var m = Object.assign({}, prev || {})
+                          if (e.target.checked) m[key] = true
+                          else delete m[key]
+                          return m
+                        })
+                      } }),
+                      React.createElement('span', {}, a.label || key),
+                    )
+                  })
+                : React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, '（加载智能体列表…）'),
+            ),
+            React.createElement('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
+              React.createElement('button', { style: btnStyle, onClick: function () { setPeriodPickOpen(false) } }, '取消'),
+              React.createElement('button', { style: btnStyle, onClick: function () {
+                var sel = isoAgentsList.filter(function (a) { return periodPickSel[a.key] }).map(function (a) { return a.key })
+                setA('periodAgents', sel)
+                setPeriodPickOpen(false)
+                setMsg(sel.length ? ('周期总结智能体：' + sel.length + ' 个') : '周期总结智能体：全部')
+              } }, '确认'),
             ),
           ),
         ) : null,
@@ -920,6 +1051,10 @@ function MemoryView(props) {
   var kwAddSelV = kwAddSelS[0]
   var setKwAddSel = kwAddSelS[1]
   var kwAddListRef = React.useRef(null)
+  // 活跃页查看的智能体（单选）：'' = 当前会话智能体；否则 preset:xxx
+  var activeAgentS = React.useState('')
+  var activeAgentV = activeAgentS[0]
+  var setActiveAgent = activeAgentS[1]
   // 智能体显示名：优先 agentPresets 的 name，兜底去 preset: 前缀
   function agentLabel(key) {
     var k = String(key || '')
@@ -961,6 +1096,13 @@ function MemoryView(props) {
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
+  // 时间范围（界面"从/到"可任选方向）：查询时自动取 min/max，避免 from>to 导致空结果
+  function rangeSwap(f, t) {
+    var fMs = f ? new Date(f + 'T00:00:00').getTime() : 0
+    var tMs = t ? new Date(t + 'T23:59:59').getTime() : 0
+    if (fMs && tMs && fMs > tMs) { var tmp = fMs; fMs = tMs; tMs = tmp }
+    return { from: fMs, to: tMs }
+  }
   // 智能体白名单过滤：筛选列表非空且关键词与筛选无交集 → 隐藏；无归属（agents 空）或筛选空 → 显示
   function kwHiddenByAgent(it) {
     if (!kwFilterV || !kwFilterV.length) return false
@@ -969,6 +1111,41 @@ function MemoryView(props) {
       if (kwFilterV.indexOf(it.agents[i]) >= 0) return false
     }
     return true
+  }
+  // 会话归属过滤：筛选非空且会话归属不在筛选内 → 隐藏；无归属（子会话）已由 host 过滤，兜底隐藏
+  function sessionHiddenByAgent(it) {
+    if (!kwFilterV || !kwFilterV.length) return false
+    var a = it && it.agent
+    if (!a) return true
+    return kwFilterV.indexOf(a) < 0
+  }
+  // 周期归属过滤：筛选非空且周期与筛选无交集 → 隐藏；无归属（共享）始终显示
+  function periodHiddenByAgent(it) {
+    if (!kwFilterV || !kwFilterV.length) return false
+    if (!it || !it.agents || !it.agents.length) return false
+    for (var i = 0; i < it.agents.length; i++) {
+      if (kwFilterV.indexOf(it.agents[i]) >= 0) return false
+    }
+    return true
+  }
+  // 共享智能体筛选行（关键词/会话记忆/周期总结页共用）：默认当前会话智能体；× 移除；+ 弹窗多选；空=全部
+  function renderAgentFilterRow() {
+    return React.createElement('div', { key: '__agent', style: Object.assign({}, mmItem, { alignItems: 'center', flexWrap: 'wrap' }) },
+      React.createElement('div', { style: { width: 130, flexShrink: 0, fontWeight: 600 } }, '智能体筛选'),
+      React.createElement('div', { style: { flex: 1, display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', minWidth: 200 } },
+        (kwFilterV && kwFilterV.length)
+          ? kwFilterV.map(function (a) {
+              return React.createElement('span', { key: a, style: { display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 4, fontSize: 11, background: 'var(--dsw-alias-bg-layer-1)' } },
+                React.createElement('span', {}, agentLabel(a) + (a === curAgentV ? '（当前）' : '')),
+                React.createElement('a', { href: 'javascript:void(0)', title: '移除该智能体', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer', fontWeight: 700 }, onClick: function (e) { e.stopPropagation(); setKwFilter(kwFilterV.filter(function (x) { return x !== a })) } }, '×'),
+              )
+            })
+          : React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '未筛选，显示全部'),
+        React.createElement('button', { style: mmBtn, title: '多选智能体（只显示这些智能体的记录）', onClick: openAgentPick }, '+'),
+      ),
+      React.createElement('div', { style: { width: '100%', color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } },
+        '默认只显示当前智能体（' + agentLabel(curAgentV || 'preset:cordis') + '）的记录；点 × 移除 → 该智能体记录不再显示；空白=全部显示；无归属记录始终显示。'),
+    )
   }
   // 保存当前智能体活跃记忆（MemoryView 层，供 renderActive 与增加弹窗共用）
   function saveActivePayload(payload) {
@@ -992,10 +1169,9 @@ function MemoryView(props) {
     var fromV = from !== undefined ? from : kwAddFromV
     var toV = to !== undefined ? to : kwAddToV
     setBusy(true)
-    var fA = fromV ? new Date(fromV + 'T00:00:00').getTime() : 0
-    var tA = toV ? new Date(toV + 'T23:59:59').getTime() : 0
+    var rng = rangeSwap(fromV, toV)
     var p = archOn
-      ? callHost('mm-keyword-archive', { from: fA, to: tA })
+      ? callHost('mm-keyword-archive', { from: rng.from, to: rng.to })
       : callHost('mm-keyword-list', {})
     p.then(function (r) { setKwAddData((r && r.items) || []) })
       .catch(function (e) { setMsg(String((e && e.message) || e)) })
@@ -1006,7 +1182,20 @@ function MemoryView(props) {
     setKwAddSel({})
     setKwAddData(null)
     setKwAddOpen(true)
-    loadKwAddData()
+    // 常规范围：从 = 最旧压缩时间，到 = 今天（覆盖全部补充区内容）
+    callHost('mm-keyword-archive', { from: 0, to: 0 }).then(function (r) {
+      var oldest = (r && r.oldestArchiveAt) || 0
+      setKwArchMeta({ oldest: oldest, newest: (r && r.newestArchiveAt) || 0 })
+      if (oldest) setKwOldest(new Date(oldest).toISOString().slice(0, 10))
+      var f = oldest ? new Date(oldest).toISOString().slice(0, 10) : ''
+      setKwAddFrom(f)
+      setKwAddTo(todayStr())
+      loadKwAddData(kwAddArchV, f, todayStr())
+    }).catch(function () {
+      setKwAddFrom('')
+      setKwAddTo(todayStr())
+      loadKwAddData(kwAddArchV, '', todayStr())
+    })
   }
   // 点击切换选中：- 变 +（选中）→ 自动置顶；恢复滚动位置（列表重排不跳动）
   function toggleKwAddSel(path) {
@@ -1061,6 +1250,33 @@ function MemoryView(props) {
   var kwArchMeta = React.useState(null) // {oldest, newest} 归档时间范围
   var kwArchMetaV = kwArchMeta[0]
   var setKwArchMeta = kwArchMeta[1]
+  // 重要区列表缓存：勾选「含归档」时保留，取消后恢复（不闪加载、不重新查询）
+  var kwImpCacheS = React.useState(null)
+  var kwImpCacheV = kwImpCacheS[0]
+  var setKwImpCache = kwImpCacheS[1]
+  // 最旧压缩时间（补充区最早年月包）：时间选择器 min 限制 = 该值，max = 今天（"今天 ~ 最旧"范围）
+  var kwOldestS = React.useState('')
+  var kwOldestV = kwOldestS[0]
+  var setKwOldest = kwOldestS[1]
+  // 关键词页时间选择是否已做过首次填充（避免每次刷新覆盖用户手改）
+  var kwTimeInitRef = React.useRef(false)
+  // 从列表项计算日期范围（updatedAt 最早/最晚）
+  function itemsDateRange(items) {
+    var mn = '', mx = ''
+    for (var i = 0; i < (items || []).length; i++) {
+      var d = String((items[i] && items[i].updatedAt) || '').slice(0, 10)
+      if (!d) continue
+      if (!mn || d < mn) mn = d
+      if (!mx || d > mx) mx = d
+    }
+    return mn ? { min: mn, max: mx } : null
+  }
+  // 今天日期（本地）
+  function todayStr() {
+    var d = new Date()
+    var p = function (n) { return (n < 10 ? '0' : '') + n }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+  }
   var expandedMap = React.useState({}) // path -> true（通用展开状态：关键词/周期内容折叠）
   var expandedV = expandedMap[0]
   var setExpanded = expandedMap[1]
@@ -1129,8 +1345,10 @@ function MemoryView(props) {
   var setCfgV = cfgState[1]
   // 会话记忆页时间范围是否已按"全局最新~最旧"初始化（避免用户手动清空后被反复填充）
   var rangeInitRef = React.useRef(false)
+  // 周期页时间范围是否已按"文件最早~最晚"初始化
+  var periodRangeInitRef = React.useRef(false)
 
-  function refreshTab(t, force) {
+  function refreshTab(t, force, opts) {
     // 前端缓存：非强制刷新且该页已有数据 → 直接显示缓存，不重拉、不闪"加载中"
     var has = t === 'turns' ? !!turnsV
       : t === 'sessions' ? (focusSidV ? !!turnsV : !!sessionsV)
@@ -1140,9 +1358,9 @@ function MemoryView(props) {
     if (!force && has) return
     setBusy(true)
     var p = Promise.resolve()
-    // 时间范围：'YYYY-MM-DD' → 毫秒（from=当天0点，to=当天23:59:59）
-    var fMs = timeFromV ? new Date(timeFromV + 'T00:00:00').getTime() : 0
-    var tMs = timeToV ? new Date(timeToV + 'T23:59:59').getTime() : 0
+    // 时间范围：'YYYY-MM-DD' → 毫秒（from=当天0点，to=当天23:59:59）；opts 可显式传（onChange 里 state 未更新）
+    var fMs = opts && opts.fromMs !== undefined ? opts.fromMs : (timeFromV ? new Date(timeFromV + 'T00:00:00').getTime() : 0)
+    var tMs = opts && opts.toMs !== undefined ? opts.toMs : (timeToV ? new Date(timeToV + 'T23:59:59').getTime() : 0)
     // 强制刷新时先清空对应页数据 → 显示"加载中"；缓存命中（非 force）不动现有数据
     if (t === 'turns') setTurns(force ? null : turnsV)
     if (t === 'sessions') { if (focusSidV) setTurns(force ? null : turnsV); else setSessions(force ? null : sessionsV) }
@@ -1166,18 +1384,46 @@ function MemoryView(props) {
     }
     if (t === 'kws') {
       if (kwArchV) {
-        var fA = kwFromV ? new Date(kwFromV + 'T00:00:00').getTime() : 0
-        var tA = kwToV ? new Date(kwToV + 'T23:59:59').getTime() : 0
-        p = callHost('mm-keyword-archive', { from: fA, to: tA }).then(function (r) {
+        var ra = rangeSwap(kwFromV, kwToV)
+        p = callHost('mm-keyword-archive', { from: ra.from, to: ra.to }).then(function (r) {
           setKws((r && r.items) || [])
           setKwArchMeta({ oldest: (r && r.oldestArchiveAt) || 0, newest: (r && r.newestArchiveAt) || 0 })
         })
       } else {
-        p = callHost('mm-keyword-list', {}).then(function (r) { setKws((r && r.items) || []); setKwArchMeta(null) })
+        p = callHost('mm-keyword-list', {}).then(function (r) {
+          var items = (r && r.items) || []
+          setKws(items); setKwArchMeta(null); setKwImpCache(items)
+          // 首次加载：默认填充时间选择 = 重要区记忆最旧 ~ 最新（常规方向；不空；之后用户手改不覆盖）
+          if (!kwTimeInitRef.current) {
+            kwTimeInitRef.current = true
+            var rg0 = itemsDateRange(items)
+            if (rg0) { setKwFrom(rg0.min); setKwTo(rg0.max) }
+          }
+        }).then(function () {
+          // 顺带取最旧压缩时间（未勾选归档时时间选择器同样限制"今天 ~ 最旧"）
+          return callHost('mm-keyword-archive', { from: 0, to: 0 }).then(function (r2) {
+            if (r2 && r2.oldestArchiveAt) setKwOldest(new Date(r2.oldestArchiveAt).toISOString().slice(0, 10))
+          }).catch(function () {})
+        })
       }
     }
-    if (t === 'active') p = callHost('mm-active-read', { session: sessionId || '' }).then(function (r) { setActive((r && r.data) || null) })
-    if (t === 'periods') p = callHost('period-history', { from: fMs || 0, to: tMs || 0 }).then(function (r) { setPeriods((r && r.items) || []) })
+    if (t === 'active') p = callHost('mm-active-read', { session: sessionId || '', agent: activeAgentV || undefined }).then(function (r) { setActive((r && r.data) || null) })
+    if (t === 'periods') p = callHost('period-history', { from: fMs || 0, to: tMs || 0 }).then(function (r) {
+      var items = (r && r.items) || []
+      setPeriods(items)
+      // 首次打开：默认填充时间 = 周期文件最早 ~ 最晚（不空）
+      if (!periodRangeInitRef.current && items.length) {
+        periodRangeInitRef.current = true
+        var pmn = '', pmx = ''
+        for (var pi = 0; pi < items.length; pi++) {
+          var pd = String((items[pi] && items[pi].createdAt) || '').slice(0, 10)
+          if (!pd) continue
+          if (!pmn || pd < pmn) pmn = pd
+          if (!pmx || pd > pmx) pmx = pd
+        }
+        if (pmn) { setTimeFrom(pmn); setTimeTo(pmx) }
+      }
+    })
     p.catch(function (e) { setMsg('加载失败: ' + String((e && e.message) || e)) }).finally(function () { setBusy(false) })
   }
   // 保存轮次总结编辑（编辑已有或新增缺失轮次）；失焦自动保存与保存按钮共用
@@ -1594,8 +1840,19 @@ function MemoryView(props) {
         ),
       )
   }
+  // 关键词页归档查询（显式 from/to：onChange 里 state 未更新，直接传值查询；自动刷新不再依赖"搜索"按钮）
+  function searchKwArch(from, to) {
+    setBusy(true)
+    var rng = rangeSwap(from, to)
+    callHost('mm-keyword-archive', { from: rng.from, to: rng.to }).then(function (r) {
+      var meta = { oldest: (r && r.oldestArchiveAt) || 0, newest: (r && r.newestArchiveAt) || 0 }
+      setKwArchMeta(meta)
+      if (meta.oldest) setKwOldest(new Date(meta.oldest).toISOString().slice(0, 10))
+      setKws((r && r.items) || [])
+    }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
+  }
   // 关键词页：首行搜索 + 新增（标题+内容）+ 列表编辑/移补充/加回；按分数排序（host 已算 score）
-  // 含归档（补充区）时间范围查询：默认最新归档前 30 天起到现在；内容折叠点击展开
+  // 含归档（补充区）时间范围查询：默认近 7 天；取消勾选恢复重要区列表缓存
   function onKwArchChange(on) {
     setKwArch(on)
     if (on) {
@@ -1603,50 +1860,44 @@ function MemoryView(props) {
       callHost('mm-keyword-archive', { from: 0, to: 0 }).then(function (r) {
         var meta = { oldest: (r && r.oldestArchiveAt) || 0, newest: (r && r.newestArchiveAt) || 0 }
         setKwArchMeta(meta)
+        if (meta.oldest) setKwOldest(new Date(meta.oldest).toISOString().slice(0, 10))
         setKws((r && r.items) || [])
-        // 默认时间范围：最新归档时间 - 30 天 起，到现在（30 天为界面默认窗口）
-        if (meta.newest) {
-          var d = new Date(meta.newest - 30 * 86400000)
-          setKwFrom(d.toISOString().slice(0, 10))
-        }
-        setKwTo('')
+        // 常规范围：从 = 最旧压缩时间，到 = 今天（覆盖全部补充区内容）
+        if (meta.oldest) setKwFrom(new Date(meta.oldest).toISOString().slice(0, 10))
+        setKwTo(todayStr())
       }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
     } else {
       setKwArchMeta(null)
       setKwFrom(''); setKwTo('')
-      refreshTab('kws', true)
+      // 恢复重要区列表缓存（不闪加载）；无缓存则手动拉取（不走 refreshTab 避免读到旧 kwArch 状态）
+      if (kwImpCacheV && kwImpCacheV.length) {
+        setKws(kwImpCacheV)
+        setKwImpRange(itemsDateRange(kwImpCacheV))
+      } else {
+        setKws(null)
+        setBusy(true)
+        callHost('mm-keyword-list', {}).then(function (r) {
+          var items = (r && r.items) || []
+          setKws(items)
+          setKwImpCache(items)
+          setKwImpRange(itemsDateRange(items))
+        }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
+      }
     }
   }
   function renderKws() {
-    // 智能体筛选行（白名单）：默认只显示当前智能体的关键词；点 × 移除该智能体；空=显示全部
-    var agentRow = React.createElement('div', { key: '__agent', style: Object.assign({}, mmItem, { alignItems: 'center', flexWrap: 'wrap' }) },
-      React.createElement('div', { style: { width: 130, flexShrink: 0, fontWeight: 600 } }, '智能体筛选'),
-      React.createElement('div', { style: { flex: 1, display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', minWidth: 200 } },
-        (kwFilterV && kwFilterV.length)
-          ? kwFilterV.map(function (a) {
-              return React.createElement('span', { key: a, style: { display: 'flex', alignItems: 'center', gap: 4, padding: '2px 6px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 4, fontSize: 11, background: 'var(--dsw-alias-bg-layer-1)' } },
-                React.createElement('span', {}, agentLabel(a) + (a === curAgentV ? '（当前）' : '')),
-                React.createElement('a', { href: 'javascript:void(0)', title: '移除该智能体（其关键词不再显示）', style: { color: 'var(--dsw-alias-label-secondary)', textDecoration: 'none', cursor: 'pointer', fontWeight: 700 }, onClick: function (e) { e.stopPropagation(); setKwFilter(kwFilterV.filter(function (x) { return x !== a })) } }, '×'),
-              )
-            })
-          : React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '未筛选，显示全部关键词'),
-        React.createElement('button', { style: mmBtn, title: '多选智能体（只显示这些智能体的关键词）', onClick: openAgentPick }, '+'),
-      ),
-      React.createElement('div', { style: { width: '100%', color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } },
-        '默认只显示当前智能体（' + agentLabel(curAgentV || 'preset:cordis') + '）的关键词；点 × 移除 → 该智能体关键词不再显示；空白=全部显示；无归属智能体的关键词始终显示。'),
-    )
     var archRow = React.createElement('div', { key: '__arch', style: Object.assign({}, mmItem, { alignItems: 'center', flexWrap: 'wrap' }) },
       React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
         Check({ checked: kwArchV, onChange: function (e) { onKwArchChange(e.target.checked) } }),
         React.createElement('span', {}, '含归档（补充区）'),
       ),
       React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '从'),
-      React.createElement('input', { type: 'date', style: inputStyle, value: kwFromV, onChange: function (e) { setKwFrom(e.target.value); setKws(null) } }),
+      React.createElement('input', { type: 'date', style: inputStyle, min: kwOldestV || undefined, max: kwToV || todayStr(), value: kwFromV, onChange: function (e) { var v = e.target.value; setKwFrom(v); if (kwArchV) { setKws(null); searchKwArch(v, kwToV) } } }),
       React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '到'),
-      React.createElement('input', { type: 'date', style: inputStyle, value: kwToV, onChange: function (e) { setKwTo(e.target.value); setKws(null) } }),
-      React.createElement('button', { style: mmBtn, onClick: function () { setKwFrom(''); setKwTo(''); setKws(null); refreshTab('kws', true) } }, '全部'),
-      React.createElement('button', { style: mmBtn, onClick: function () { setKws(null); refreshTab('kws', true) } }, '搜索'),
-      (kwArchV && kwArchMetaV && kwArchMetaV.newest) ? React.createElement('span', { key: '__hint', style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } }, '默认窗口：最新归档 ' + new Date(kwArchMetaV.newest).toISOString().slice(0, 10) + ' 前 30 天 起 · 最旧归档 ' + (kwArchMetaV.oldest ? new Date(kwArchMetaV.oldest).toISOString().slice(0, 10) : '?') + '（"全部"可查全部归档）') : null,
+      React.createElement('input', { type: 'date', style: inputStyle, min: kwFromV || kwOldestV || undefined, max: todayStr(), value: kwToV, onChange: function (e) { var v = e.target.value; setKwTo(v); if (kwArchV) { setKws(null); searchKwArch(kwFromV, v) } } }),
+      React.createElement('button', { style: mmBtn, onClick: function () { setKwFrom(''); setKwTo(''); if (kwArchV) { setKws(null); searchKwArch('', '') } else { setKws(null); refreshTab('kws', true) } } }, '全部'),
+      (kwArchV && kwArchMetaV && kwArchMetaV.newest) ? React.createElement('div', { key: '__hint', style: { width: '100%', color: 'var(--dsw-alias-label-secondary)', fontSize: 11, whiteSpace: 'pre-wrap' } },
+        '默认窗口：从当前时间（' + new Date().toISOString().slice(0, 10) + '）到最旧归档 ' + (kwArchMetaV.oldest ? new Date(kwArchMetaV.oldest).toISOString().slice(0, 10) : '?') + '\n（"全部"可查全部归档；"从/到"可任选方向，自动取区间）') : null,
     )
     var searchRow = React.createElement('div', { key: '__search', style: Object.assign({}, mmItem, { alignItems: 'center' }) },
       React.createElement('div', { style: { width: 130, flexShrink: 0, fontWeight: 600 } }, '搜索关键词'),
@@ -1665,7 +1916,7 @@ function MemoryView(props) {
         }).catch(function (e) { setMsg(String((e && e.message) || e)) }).finally(function () { setBusy(false) })
       } }, '+ 新增')
     )
-    if (!kwsV) return React.createElement('div', { style: mmEmpty }, busyV ? '加载中…' : [agentRow, archRow, searchRow, addRow])
+    if (!kwsV) return React.createElement('div', { style: mmEmpty }, busyV ? '加载中…' : [renderAgentFilterRow(), archRow, searchRow, addRow])
     // 多词过滤：每个词都需命中 标题 或 内容（host 已按分数降序）
     var terms = kwSearchV.trim().split(/\s+/).filter(Boolean)
     var list = kwsV
@@ -1676,20 +1927,19 @@ function MemoryView(props) {
         return true
       })
     }
-    // 时间范围过滤（关键词 + 周期总结都生效；按 updatedAt / at 判断）
+    // 时间范围过滤（关键词 + 周期总结都生效；按 updatedAt / at 判断；从/到自动取区间）
     if (kwFromV || kwToV) {
-      var fMs = kwFromV ? new Date(kwFromV + 'T00:00:00').getTime() : 0
-      var tMs = kwToV ? new Date(kwToV + 'T23:59:59').getTime() : 0
+      var rg = rangeSwap(kwFromV, kwToV)
       list = list.filter(function (it) {
         var t = it.updatedAt ? new Date(it.updatedAt).getTime() : (it.at || 0)
-        if (fMs && (!t || t < fMs)) return false
-        if (tMs && (!t || t > tMs)) return false
+        if (rg.from && (!t || t < rg.from)) return false
+        if (rg.to && (!t || t > rg.to)) return false
         return true
       })
     }
     // 智能体排除过滤（无归属 / 排除列表空 → 显示）
     list = list.filter(function (it) { return !kwHiddenByAgent(it) })
-    var rows = [agentRow, archRow, searchRow, addRow].concat(list.map(function (it) {
+    var rows = [renderAgentFilterRow(), archRow, searchRow, addRow].concat(list.map(function (it) {
       var isEditing = editState && editState.path === it.path
       var isOpen = !!expandedV[it.path]
       var zoneTag = it.zone === 'period' ? '（周期）' : it.zone === 'archive' ? '（归档）' : ''
@@ -1755,7 +2005,15 @@ function MemoryView(props) {
     var worksEditSid = isWorksEdit ? String(editState.path).slice('__active_works:'.length) : ''
     function saveActive(payload) { saveActivePayload(payload) }
     return React.createElement('div', { style: mmCard },
-      React.createElement('div', { style: { fontWeight: 600, marginBottom: 6 } }, '智能体活跃：' + (activeV.agent || '') + (activeV.session ? '（会话 ' + String(activeV.session).slice(-12) + '）' : '')),
+      // 智能体单选：默认当前会话智能体（标"当前"）；切换后只显示该智能体的活跃记忆
+      React.createElement('div', { style: { fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+        React.createElement('span', {}, '智能体活跃：'),
+        React.createElement('select', { style: Object.assign({}, inputStyle, { width: 220 }), value: activeAgentV || '', onChange: function (e) { setActiveAgent(e.target.value); refreshTab('active', true) } },
+          React.createElement('option', { value: '' }, agentLabel(curAgentV || 'preset:cordis') + '（当前）'),
+          agentsV.map(function (a) { return React.createElement('option', { key: a.key, value: a.key }, (a.label || a.key) + (a.key === curAgentV ? '（当前）' : '')) }),
+        ),
+        React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, activeV.agent || ''),
+      ),
       // ① 自定义设定
       React.createElement('div', { style: { marginBottom: 8 } },
         React.createElement('div', { style: { fontWeight: 600, fontSize: 12, marginBottom: 4 } }, '自定义设定（手动维护，对话跟踪不覆盖）'),
@@ -1833,7 +2091,7 @@ function MemoryView(props) {
   // 周期页：内容可编辑 + 重审（用户选改后提示模型重总结）；按钮靠右换行
   function renderPeriods() {
     if (!periodsV) return React.createElement('div', { style: mmEmpty }, busyV ? '加载中…' : '（无周期总结）')
-    return periodsV.map(function (it) {
+    return [renderAgentFilterRow()].concat(periodsV.filter(function (it) { return !periodHiddenByAgent(it) }).map(function (it) {
       var isEditing = editState && editState.path === it.path
       var btnRow = { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%', justifyContent: 'flex-end', marginTop: 4 }
             return React.createElement('div', { key: it.path, style: mmItem },
@@ -1867,7 +2125,7 @@ function MemoryView(props) {
                     ),
                   ),
             )
-    })
+    }))
   }
 
   // 会话记忆页：列出未归档的所有会话（标题+id）→ 点击进入该会话轮次总结
@@ -1934,15 +2192,16 @@ function MemoryView(props) {
     if (!sessionsV) return React.createElement('div', { style: mmEmpty }, busyV ? '加载中…' : '（无会话记录）')
     // 会话标题搜索：按 标题 / 会话id / 摘要 过滤
     var sTerm = String(sessionSearchV || '').trim().toLowerCase()
-    var sList = sessionsV
+    var sList = sessionsV.filter(function (s) { return !sessionHiddenByAgent(s) })
     if (sTerm) {
-      sList = sessionsV.filter(function (s) {
+      sList = sList.filter(function (s) {
         return (String(s.title || '').toLowerCase().indexOf(sTerm) >= 0)
           || (String(s.sid || '').toLowerCase().indexOf(sTerm) >= 0)
           || (String(s.summary || '').toLowerCase().indexOf(sTerm) >= 0)
       })
     }
     return [
+      renderAgentFilterRow(),
       React.createElement('div', { key: '__ssearch', style: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderBottom: '1px dashed var(--dsw-alias-border-l1)', fontSize: 12 } },
         React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, '搜索会话'),
         React.createElement('input', { style: Object.assign({}, mmArea, { minHeight: 24, flex: 1 }), placeholder: '按标题 / 会话id / 摘要搜索', value: sessionSearchV, onChange: function (e) { setSessionSearch(e.target.value) } }),
@@ -1954,7 +2213,10 @@ function MemoryView(props) {
         setFocusSid(s.sid); setTurns(null)
       }
       return React.createElement('div', { key: s.sid, style: Object.assign({}, mmItem, { cursor: 'pointer' }), onClick: enter },
-        React.createElement('div', { style: { width: 200, flexShrink: 0, fontWeight: 600, wordBreak: 'break-all' } }, s.title || ('会话 ' + String(s.sid).slice(-8))),
+        React.createElement('div', { style: { width: 200, flexShrink: 0, fontWeight: 600, wordBreak: 'break-all' } },
+          s.title || ('会话 ' + String(s.sid).slice(-8)),
+          s.agent ? React.createElement('div', { style: { fontSize: 10, color: 'var(--dsw-alias-label-secondary)', fontWeight: 400, marginTop: 2 } }, agentLabel(s.agent) + (s.agent === curAgentV ? '（当前）' : '')) : null,
+        ),
         React.createElement('div', { style: { flex: 1, minWidth: 160, color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } },
           s.summary ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-primary)', fontSize: 12, marginBottom: 2, wordBreak: 'break-all' } }, s.summary) : null,
           React.createElement('span', { style: { wordBreak: 'break-all' } }, s.sid + ' · ' + s.turns + ' 条轮次 · ' + (s.firstAt || '').slice(0, 10) + ' ~ ' + (s.lastAt || '').slice(0, 10)),
@@ -1974,11 +2236,24 @@ function MemoryView(props) {
   ]
   var body = tabV === 'turns' ? renderTurns() : tabV === 'sessions' ? renderSessions() : tabV === 'active' ? renderActive() : tabV === 'kws' ? renderKws() : renderPeriods()
   // 时间段搜索栏（会话记忆/周期总结页显示；轮次总结页固定当前会话不带时间）
+  // 常规时间范围：从 ≤ 到；联动（从≤到、到≥从）；min=页面记忆最早、max=今天；时间变化自动刷新（无"搜索/清空"按钮）
+  var tbMin = ''
+  if (tabV === 'sessions' && sessionsV) {
+    for (var tbi = 0; tbi < sessionsV.length; tbi++) {
+      var tbd = String((sessionsV[tbi] && sessionsV[tbi].firstAt) || '').slice(0, 10)
+      if (tbd && (!tbMin || tbd < tbMin)) tbMin = tbd
+    }
+  } else if (tabV === 'periods' && periodsV) {
+    for (var tbi2 = 0; tbi2 < periodsV.length; tbi2++) {
+      var tbd2 = String((periodsV[tbi2] && periodsV[tbi2].createdAt) || '').slice(0, 10)
+      if (tbd2 && (!tbMin || tbd2 < tbMin)) tbMin = tbd2
+    }
+  }
   var timeBar = (tabV === 'sessions' || tabV === 'periods') ? React.createElement('div', { key: '__time', style: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderBottom: '1px dashed var(--dsw-alias-border-l1)', fontSize: 12, flexWrap: 'wrap' } },
     React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, '从'),
-    React.createElement('input', { type: 'date', style: inputStyle, value: timeFromV, onChange: function (e) { setTimeFrom(e.target.value); setTurns(null); setSessions(null); setPeriods(null) } }),
+    React.createElement('input', { type: 'date', style: inputStyle, min: tbMin || undefined, max: timeToV || todayStr(), value: timeFromV, onChange: function (e) { var v = e.target.value; setTimeFrom(v); setTurns(null); setSessions(null); setPeriods(null); refreshTab(tabV, true, { fromMs: v ? new Date(v + 'T00:00:00').getTime() : 0 }) } }),
     React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, '到'),
-    React.createElement('input', { type: 'date', style: inputStyle, value: timeToV, onChange: function (e) { setTimeTo(e.target.value); setTurns(null); setSessions(null); setPeriods(null) } }),
+    React.createElement('input', { type: 'date', style: inputStyle, min: timeFromV || tbMin || undefined, max: todayStr(), value: timeToV, onChange: function (e) { var v = e.target.value; setTimeTo(v); setTurns(null); setSessions(null); setPeriods(null); refreshTab(tabV, true, { toMs: v ? new Date(v + 'T23:59:59').getTime() : 0 }) } }),
     tabV === 'sessions' ? React.createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
       Check({ checked: searchArchV, onChange: function (e) {
         var on = e.target.checked
@@ -1988,9 +2263,7 @@ function MemoryView(props) {
       } }),
       React.createElement('span', {}, '含归档'),
     ) : null,
-    React.createElement('button', { style: mmBtn, onClick: function () { setTurns(null); setSessions(null); setPeriods(null); refreshTab(tabV, true) } }, '搜索'),
     React.createElement('button', { style: mmBtn, onClick: function () { setTimeFrom(''); setTimeTo(''); setSearchArch(false); setTurns(null); setSessions(null); setPeriods(null); refreshTab(tabV, true) } }, '全部'),
-    React.createElement('button', { style: Object.assign({}, mmBtn, { marginLeft: 'auto' }), onClick: function () { setTimeFrom(''); setTimeTo(''); setSearchArch(false); setTurns(null); setSessions(null); setPeriods(null) } }, '清空'),
   ) : null
   var rendered
   try {
@@ -2139,9 +2412,9 @@ function MemoryView(props) {
               React.createElement('span', {}, '含归档（补充区）'),
             ),
             React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, '从'),
-            React.createElement('input', { type: 'date', style: Object.assign({}, inputStyle, { flex: 1, minWidth: 90 }), value: kwAddFromV, onChange: function (e) { var v = e.target.value; setKwAddFrom(v); setKwAddData(null); loadKwAddData(kwAddArchV, v, kwAddToV) } }),
+            React.createElement('input', { type: 'date', style: Object.assign({}, inputStyle, { flex: 1, minWidth: 90 }), min: kwOldestV || undefined, max: kwAddToV || todayStr(), value: kwAddFromV, onChange: function (e) { var v = e.target.value; setKwAddFrom(v); setKwAddData(null); loadKwAddData(kwAddArchV, v, kwAddToV) } }),
             React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, '到'),
-            React.createElement('input', { type: 'date', style: Object.assign({}, inputStyle, { flex: 1, minWidth: 90 }), value: kwAddToV, onChange: function (e) { var v = e.target.value; setKwAddTo(v); setKwAddData(null); loadKwAddData(kwAddArchV, kwAddFromV, v) } }),
+            React.createElement('input', { type: 'date', style: Object.assign({}, inputStyle, { flex: 1, minWidth: 90 }), min: kwAddFromV || kwOldestV || undefined, max: todayStr(), value: kwAddToV, onChange: function (e) { var v = e.target.value; setKwAddTo(v); setKwAddData(null); loadKwAddData(kwAddArchV, kwAddFromV, v) } }),
             React.createElement('button', { style: mmBtn, onClick: function () { setKwAddFrom(''); setKwAddTo(''); setKwAddArch(false); setKwAddData(null); loadKwAddData(false, '', '') } }, '全部'),
           ),
           React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8, fontSize: 12 } },

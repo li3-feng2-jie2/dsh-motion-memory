@@ -663,6 +663,13 @@ export function apply(ctx) {
     if (c && c.queryOtherAgents) return ''
     return currentOwner(meta)
   }
+  // 查询归属范围（明确指定）：ownerKey 空 = 按开关的本智能体；preset:xxx = 指定智能体；all = 所有智能体
+  function queryOwnerOf(meta, args) {
+    const ow = String((args && args.ownerKey) || '').trim()
+    if (!ow) return scopeOwner(meta)
+    if (ow === 'all') return ''
+    return ow
+  }
   // ── 智能体身份键：优先用 agentPreset（同一 preset 的会话 = 同一智能体，共享记忆；
   //    子智能体/无 preset 的会话回退 session id 隔离）─────────────────────────
   function sessionPresetOf(agentOrSession) {
@@ -2230,8 +2237,9 @@ export function apply(ctx) {
       let published = false
       for (let i = events.length - 1; i >= 0; i--) {
         const ev = events[i]
-        if (ev.type !== 'user/message' || ev.data.source.kind !== 'motion-memory-overview') continue
-        const digest = overviewDigestOfSource(ev.data.source)
+        const src = ev && ev.data && ev.data.source
+        if (ev.type !== 'user/message' || !src || src.kind !== 'motion-memory-overview') continue
+        const digest = overviewDigestOfSource(src)
         if (digest === undefined) continue
         published = true
         if (visible.has(ev.seq)) return { visibleDigest: digest, published }
@@ -2268,6 +2276,8 @@ export function apply(ctx) {
       const existing = overviewMessage(decision.messages)
       if (existing !== undefined) return decision
       const ownerKey = (await ownerKeyOfAsync(sid)) || ownerKeyOf(agent)
+      // 子会话/无智能体归属：不注入记忆总览（省 token；需要时自行调 memory_query）
+      if (!ownerKey) return decision
       if (ownerKey) await mergeLegacyOwners(ownerKey).catch(() => {})
       const entries = await overviewEntries(sid, ownerKey || sid)
       // 无记忆也注入（携带使用指引，引导新会话产生记忆）——空总览不再是噪音
@@ -2503,7 +2513,51 @@ export function apply(ctx) {
     queryHistory: { type: 'integer', description: 'open 时附带的查询记录条数；-1=5，>=0 用该值，缺省按配置（0=不附带）' },
     updateHistory: { type: 'integer', description: 'open 时附带的增量更新记录条数；-1=5，>=0 用该值，缺省按配置（0=不附带）' },
     expandDepth: { type: 'integer', description: 'open 时关联展开层数：-1=按配置，0=不展开，n=n 层' },
+    ownerKey: { type: 'string', description: '查询智能体范围：空=本智能体；preset:xxx=指定智能体；all=所有智能体' },
+    agents: { type: 'boolean', description: 'true 时列出智能体记忆概览（有哪些智能体、各自记忆量），不执行普通查询' },
   }, [], async (args, meta) => {
+    // ① 列出智能体记忆概览（先枚举有哪些智能体，再 ownerKey 定向查询）
+    if (args.agents) {
+      const own = queryOwnerOf(meta, args)
+      const stat = {}
+      const touch = (key) => { key = String(key || ''); if (!key) key = '（无归属）'; if (!stat[key]) stat[key] = { important: 0, events: 0, period: 0, recent: [] } }
+      const push = (key, kind, title) => { touch(key); stat[key][kind]++; if (stat[key].recent.length < 3) stat[key].recent.push(String(title || '')) }
+      const inScope = (ow) => !own || ow === own
+      for (const f of await listFiles(importantDir(), false)) {
+        const o = await readJson(f.path)
+        if (!o || isTombstone(o)) continue
+        const ow = ownerOf(o)
+        if (!inScope(ow)) continue
+        push(ow, 'important', o.title)
+      }
+      for (const f of await listFiles(dailyBaseDir(), true)) {
+        const rel = relOf(f.path)
+        if (!isEventRel(rel)) continue
+        if (rel.indexOf('周期记忆/') >= 0) continue
+        const o = await readJson(f.path)
+        if (!o || isTombstone(o) || o.kind !== 'event') continue
+        const ow = ownerOf(o)
+        if (!inScope(ow)) continue
+        push(ow, 'events', o.title)
+      }
+      for (const f of await listFiles(periodBaseDir(), true)) {
+        const o = await readJson(f.path)
+        if (!o || isTombstone(o) || o.kind !== 'period') continue
+        const ow = String(o.ownerKey || '')
+        if (!inScope(ow)) continue
+        push(ow, 'period', o.title)
+      }
+      const keys = Object.keys(stat).sort()
+      if (!keys.length) return { ok: true, text: '【智能体记忆概览】（无记忆文件）', data: { agents: [] } }
+      const lines = ['【智能体记忆概览】' + (own ? '（范围：' + own + '）' : '（全部）')]
+      for (const k of keys) {
+        const s = stat[k]
+        lines.push('· ' + k + '：重要 ' + s.important + ' · 事件 ' + s.events + ' · 周期 ' + s.period + (s.recent.length ? ' · 最近：' + s.recent.join('；') : ''))
+      }
+      lines.push('（可用 memory_query ownerKey=preset:xxx keyword=词 / open=标题 定向查询；ownerKey=all 查询所有智能体）')
+      await logQuery(meta.session, '智能体记忆概览', null)
+      return { ok: true, text: lines.join('\n'), data: { agents: keys } }
+    }
     // ① 轮次原文阅读（openTurn）
     if (args.openTurn) {
       const text = await readTurnRef(String(args.openTurn), 32768)
@@ -2512,7 +2566,7 @@ export function apply(ctx) {
     }
     // ② 打开指定标题阅读（关联展开 + 历史记录）
     if (args.open) {
-      const found = await findImportant(args.open, scopeOwner(meta))
+      const found = await findImportant(args.open, queryOwnerOf(meta, args))
       if (!found) return { ok: false, text: '重要记忆中未找到标题：' + args.open + '（可先 keyword 搜索，或开启 queryOtherAgents 扩大范围）' }
       found.obj.lastAccessedAt = nowIso()
       found.obj.history = found.obj.history || []
@@ -2604,7 +2658,7 @@ export function apply(ctx) {
       parts.push('【活跃索引】（无，可在产生记忆后查看）')
     }
     const n = Math.max(1, args.recent || cfg().recentOverviewN || 3)
-    const qOwner = scopeOwner(meta)
+    const qOwner = queryOwnerOf(meta, args)
     const evs = []
     // v5 定向扫描：按 年/月 目录从新到旧翻，取最近 n 条事件（避免全量递归扫全部日期）
     const now = new Date()
@@ -2639,7 +2693,7 @@ export function apply(ctx) {
     }
     let titles = []
     if (args.keyword) {
-      const hits = await searchAllMemories(args.keyword, false)
+      const hits = await searchAllMemories(args.keyword, false, queryOwnerOf(meta, args))
       titles = hits.map(h => h.title)
       const zones = hits.map(h => h.zone)
       parts.push('【记忆匹配标题】' + (titles.length ? titles.map((t, i) => t + (zones[i] === 'period' ? '（周期）' : '')).join('；') : '（无）'))
@@ -3420,7 +3474,7 @@ export function apply(ctx) {
 
   // v5 周期总结联动①：压缩当前活跃（各智能体记录链/works）→ 状态素材
   // 读取 当前活跃/ 下所有 v3/v4 活跃文件，取记录链每条文本前 80 字 + 指向，拼成"当前状态"段落
-  async function activeRecordsContextText() {
+  async function activeRecordsContextText(ownerKey) {
     try {
       const lines = ['【当前活跃记录链】']
       const acts = []
@@ -3428,6 +3482,8 @@ export function apply(ctx) {
         if (f.name === 'active.json' || !f.name.endsWith('.json')) continue
         const o = await readJson(f.path)
         if (!o || isTombstone(o) || !o.agent) continue
+        // 按智能体分类：只压缩目标智能体的活跃（ownerKey 空 = 全部）
+        if (ownerKey && o.agent !== ownerKey) continue
         // v4=works / v3=records 统一取"每条记录文本"
         const items = Array.isArray(o.works) ? o.works : (Array.isArray(o.records) ? o.records : [])
         acts.push({ agent: o.agent, items })
@@ -4708,6 +4764,8 @@ function parseAdminJson(text) {
       const preset = (await sessionPresetOfAsync(sid)) || sessionPresetOf(session)
       if (preset) ownerKey = 'preset:' + preset
     } catch (e) {}
+    // 子会话/无智能体归属：不做记忆记录——即使触发对话跟踪总结也不运行（memory_query 等查询功能不受影响）
+    if (!ownerKey) return
     const meta = { agent: ownerKey || sid, session: sid, turn, ownerKey: ownerKey || sid }
     // 方案B：turn/end 前热重载配置（确保 interval 等最新）
     reloadConfigIfChanged().then(() => {
@@ -4743,11 +4801,11 @@ function parseAdminJson(text) {
   // 1. 重要/ 全部标题（无时间限制）
   // 2. 周期记忆/ 近 decayDays(30) 天标题（新增）
   // 3. 补充/ 仅当 withArchive=true（有关联引用触发的场景，如强化/周期线索）才进入
-  async function searchAllMemories(keyword, withArchive) {
+  async function searchAllMemories(keyword, withArchive, owner) {
     const hits = []
     const kw = String(keyword || '')
     if (!kw) return hits
-    const imp = await searchTitles(importantDir(), kw, false)
+    const imp = await searchTitles(importantDir(), kw, false, owner)
     for (const t of imp) hits.push({ title: t, zone: 'important' })
     // 周期近 decayDays 天
     const decay = Math.max(1, Number(cfg().decayDays) || 30)
@@ -4763,7 +4821,7 @@ function parseAdminJson(text) {
       }
     }
     if (withArchive) {
-      const arc = await searchTitles(archiveBaseDir(), kw, true)
+      const arc = await searchTitles(archiveBaseDir(), kw, true, owner)
       for (const t of arc) { if (!hits.some(h => h.title === t)) hits.push({ title: t, zone: 'archive' }) }
     }
     // 无模型记忆整理区（可被扫描检索）
@@ -5305,11 +5363,35 @@ function parseAdminJson(text) {
   function periodCfg() {
     const c = cfg()
     if (!c.admin) c.admin = {}
-    if (!c.admin.period) c.admin.period = { enabled: false, intervalDays: 1, intervalHours: 0, scope: 1, scopeDetail: 'events-nomodel', useTools: true, impactPercent: 100, impactCount: 0, economize: [], truncK: 2, skipRecentDays: 14 }
+    if (!c.admin.period) c.admin.period = { enabled: false, intervalDays: 1, intervalHours: 0, scope: 1, scopeDetail: 'events-nomodel', useTools: true, impactPercent: 100, impactCount: 0, economize: [], truncK: 2, skipRecentDays: 14, agents: [] }
     const pc = c.admin.period
-    // 最近 N 天素材不总结：默认 14，最小 7（0/缺省回退默认）
-    if (pc.skipRecentDays === undefined || pc.skipRecentDays === null || pc.skipRecentDays < 7) pc.skipRecentDays = pc.skipRecentDays === 0 ? 0 : 14
+    if (!Array.isArray(pc.agents)) pc.agents = []
+    // 最近 N 天素材不总结：默认 14，最小 14（0/缺省/小于 14 一律回退默认 14，保证近期记忆不被过早压缩）
+    if (!(pc.skipRecentDays >= 14)) pc.skipRecentDays = 14
     return pc
+  }
+  // 全部智能体 key（preset:*）：active.json agents + 记忆文件归属去重
+  async function allAgentKeys() {
+    const seen = {}
+    const out = []
+    const add = (k) => { k = String(k || '').trim(); if (k && k.indexOf('preset:') === 0 && !seen[k]) { seen[k] = true; out.push(k) } }
+    try {
+      const idx = await readJson(activeIndexPath())
+      if (idx && Array.isArray(idx.agents)) for (const a of idx.agents) add(a && a.agent)
+    } catch (e) {}
+    for (const f of await listFiles(importantDir(), false)) {
+      const o = await readJson(f.path)
+      if (!o || isTombstone(o)) continue
+      add(ownerOf(o))
+    }
+    return out
+  }
+  // 周期目标智能体：配置 agents（选中）为空 → 全部
+  async function periodTargets() {
+    const pc = periodCfg()
+    const cfgAgents = Array.isArray(pc.agents) ? pc.agents.filter(a => String(a).indexOf('preset:') === 0) : []
+    if (cfgAgents.length) return cfgAgents
+    return allAgentKeys()
   }
   function periodBaseDir() { return p(dailyBaseDir(), '周期记忆') }
   // v2 目录粒度：YYYY/MM（中长期记忆，年月足够；文件名含完整时间区分同月多次）
@@ -5448,15 +5530,19 @@ function parseAdminJson(text) {
     const scope = Math.min(3, Math.max(1, Number((extra && extra.scope) || pc.scope) || 1))
     const scopeDetail = (extra && extra.scopeDetail) || pc.scopeDetail || SCOPE_DEFAULTS[scope]
     const rangeFrom = (extra && extra.from) ? Number(extra.from) : 0
-    const rangeTo = (extra && extra.to) ? Number(extra.to) : 0
+    const rangeTo0 = (extra && extra.to) ? Number(extra.to) : 0
     const ignoreSummarized = !!(extra && extra.ignoreSummarized)
     const truncK = Math.max(0, Number((extra && extra.truncK) || pc.truncK) || 2)
-    // 最近 N 天素材不总结（skipRecentDays，默认 14，最小 7）：定时/手动周期收集时把 rangeTo 收窄到「现在 - N 天」，
-    // 只总结 N 天前的素材；历史重总结（extra.from/to 显式传入）不套用此收窄。
-    if (!(extra && (extra.from || extra.to)) && pc.skipRecentDays) {
-      const skipMs = Math.max(7, Number(pc.skipRecentDays) || 14) * 86400000
-      const recentCap = Date.now() - skipMs
-      if (!rangeTo || rangeTo > recentCap) rangeTo = recentCap
+    // 目标智能体（按智能体分类周期总结）：extra.ownerKey 指定；空 = 全部
+    const periodOwner = String((extra && extra.ownerKey) || '').trim()
+    // 窗口：最近 7 天固定不压缩（最近使用的会话保持热）→ rangeTo 上限收窄到 now-7；
+    // 放弃判定窗口 = [now - skipRecentDays, now - 7]（可总结区）；历史重总结（显式 from/to）不套用。
+    let rangeTo = rangeTo0
+    const skipMs = Math.max(14, Number(pc.skipRecentDays) || 14) * 86400000
+    const winFrom = Date.now() - skipMs
+    const recentCap7 = Date.now() - 7 * 86400000
+    if (!(extra && (extra.from || extra.to))) {
+      if (!rangeTo || rangeTo > recentCap7) rangeTo = recentCap7
     }
     // 定时周期可独立指定模型（空则用全局管理员模型）；useSessionModel=true 用会话主力模型
     let mc = resolveModelConfig(pc.model)
@@ -5489,6 +5575,7 @@ function parseAdminJson(text) {
       if (rel.indexOf('周期记忆/') >= 0) continue
       const o = await readJson(f.path)
       if (!o || isTombstone(o) || o.kind !== 'event') continue
+      if (periodOwner && ownerOf(o) !== periodOwner) continue
       if (!ignoreSummarized && o.summarizedAt) continue
       const created = parseIso(o.createdAt) || 0
       if (rangeFrom && created < rangeFrom) continue
@@ -5499,6 +5586,7 @@ function parseAdminJson(text) {
     for (const f of await listFiles(noModelDir(), true)) {
       const o = await readJson(f.path)
       if (!o || isTombstone(o) || o.kind !== 'no-model') continue
+      if (periodOwner && ownerOf(o) !== periodOwner) continue
       if (!ignoreSummarized && o.summarizedAt) continue
       const created = parseIso(o.createdAt) || 0
       if (rangeFrom && created < rangeFrom) continue
@@ -5509,6 +5597,7 @@ function parseAdminJson(text) {
     for (const f of await listFiles(p(root(), '记忆累积', '补充'), true)) {
       const o = await readJson(f.path)
       if (!o || isTombstone(o) || o.kind !== 'keyword') continue
+      if (periodOwner && ownerOf(o) !== periodOwner) continue
       if (!ignoreSummarized && o.summarizedAt) continue
       const created = parseIso(o.updatedAt) || parseIso(o.createdAt) || 0
       if (rangeFrom && created < rangeFrom) continue
@@ -5607,12 +5696,27 @@ function parseAdminJson(text) {
       const limit = count > 0 ? Math.min(count, evsFiltered.length) : Math.max(1, Math.floor(evsFiltered.length * percent / 100))
       selected = scored.slice(0, limit)
     }
+    // 自动放弃：可总结窗口 [now-skipRecentDays, now-7]（再 ∩ [rangeFrom, rangeTo]）内无可总结内容 → 跳过（不生成空周期）
+    if (!(extra && (extra.from || extra.to))) {
+      const hasWin = evsFiltered.some(function (e) {
+        const t = parseIso(e.obj.createdAt) || parseIso(e.obj.updatedAt) || 0
+        if (!t) return false
+        if (t < winFrom) return false
+        if (t > recentCap7) return false
+        if (rangeFrom && t < rangeFrom) return false
+        if (rangeTo && t > rangeTo) return false
+        return true
+      })
+      if (!hasWin && !sessionItems.length) {
+        return { ok: true, text: '可总结窗口（最近 ' + Math.round(skipMs / 86400000) + ' 天 ~ 最近 7 天）内无可总结内容，自动放弃', skipped: true }
+      }
+    }
     if (!selected.length && !sessionItems.length) return { ok: true, text: '周期内无未总结的事件记忆' + (scope >= 2 ? '且无会话素材' : ''), skipped: true }
     // 组装 items（事件 + 会话素材）
     // v4 #3：管理员上下文装在素材最前面（占 summaryPercent 预算）
     const adminCtx = await adminContextText(Math.floor(estimateTokens('', opts.langTokens) * 0 + (Number(opts.contextTokens) || 128000) * (Number(opts.percent) || 50) / 100 / 4))
     // v5：压缩当前活跃（各智能体记录链尾部）→ 作为周期总结的状态素材（"活跃末尾下沉"）
-    const activeCtx = await activeRecordsContextText()
+    const activeCtx = await activeRecordsContextText(periodOwner || undefined)
     const eventItems = selected.map(e => ({ id: e.rel, text: '【' + e.obj.title + '】' + (e.obj.content || '') }))
     const sessItems = sessionItems.map(s => ({ id: s.sid + '@' + s.turn, text: '【会话轮次 ' + s.sid + '@' + s.turn + '】' + s.text }))
     const pre = []
@@ -5627,11 +5731,12 @@ function parseAdminJson(text) {
     const existing = await listFiles(dir, false)
     const seq = existing.length + 1
     const trigger = force ? 'manual' : 'auto'
-    const path = await uniquePath(dir, stamp(d) + (trigger === 'manual' ? '_manual' : '') + '-' + seq + '.json')
+    const ownerTag = periodOwner ? String(periodOwner).replace(/^preset:/, '') : 'all'
+    const path = await uniquePath(dir, stamp(d) + '_' + ownerTag + (trigger === 'manual' ? '_manual' : '') + '-' + seq + '.json')
     const obj = {
       schemaVersion: 1, id: uid(), kind: 'period', location: 'period', readonly: true,
-      title: '周期总结 ' + ymdPath(d) + (trigger === 'manual' ? '（手动）' : '') + '（' + scopeLabelOf(scope, scopeDetail) + '）',
-      trigger,
+      title: '周期总结 ' + ymdPath(d) + (periodOwner ? '（' + periodOwner + '）' : '（全部智能体）') + (trigger === 'manual' ? '（手动）' : '') + '（' + scopeLabelOf(scope, scopeDetail) + '）',
+      trigger, ownerKey: periodOwner || 'all',
       scope, scopeLabel: scopeLabelOf(scope, scopeDetail), scopeDetail,
       range: { from: rangeFrom || null, to: rangeTo || null },
       reason: '定时周期模式' + (trigger === 'manual' ? '手动触发' : '自动触发'),
@@ -5702,7 +5807,8 @@ function parseAdminJson(text) {
             const dir = ymPath(d)
             const existing = await listFiles(p(dailyBaseDir(), dir), false)
             const seq = existing.length + 1
-            const evMeta = { agent: 'memory-admin', session: sid2 || '', turn: turn2 }
+            // 转正文件归属 = 触发会话的智能体（无模型文件 createdBy 即该归属），而非 memory-admin
+            const evMeta = { agent: ownerOf(e.obj) || 'memory-admin', session: sid2 || '', turn: turn2 }
             dst = await uniquePath(p(dailyBaseDir(), dir), eventFileName(evMeta, d, seq))
           }
           e.obj.meta = e.obj.meta || {}
@@ -5837,9 +5943,15 @@ function parseAdminJson(text) {
             // ② 周期重审请求：_admin/period-rereview-request.json（对话页"记忆"页签）
             const rereviewHandled = await checkPeriodRereviewRequest().catch(() => false)
             if (rereviewHandled) return
-            // ③ 周期到期自动执行
+            // ③ 周期到期自动执行（按智能体分类：统一时间周期，每个目标智能体各生成自己的周期总结）
             return periodDue().then(due => {
-              if (due) scheduleWork('period', () => runPeriodSummary({ agent: 'memory-admin', session: '', turn: 0 }, false), '定时周期总结').catch(e => console.error('[motion-memory] 周期总结失败: ' + (e && e.message)))
+              if (due) {
+                periodTargets().then(targets => {
+                  for (const ow of targets) {
+                    scheduleWork('period', () => runPeriodSummary({ agent: 'memory-admin', session: '', turn: 0 }, false, false, { ownerKey: ow }), '定时周期总结（' + ow + '）').catch(e => console.error('[motion-memory] 周期总结失败 ' + ow + ': ' + (e && e.message)))
+                  }
+                }).catch(() => {})
+              }
             })
           })
         })
@@ -5989,13 +6101,18 @@ function parseAdminJson(text) {
       const req = await readJson(reqPath)
       if (!req || isTombstone(req)) return false
       const resetTimer = !!req.resetTimer
-      await scheduleWork('period', () => runPeriodSummary({ agent: 'memory-admin', session: '', turn: 0 }, true, false, {
-        scope: req.scope, scopeDetail: req.scopeDetail, from: req.from, to: req.to,
-        ignoreSummarized: !!req.ignoreSummarized, truncK: req.truncK,
-      }), '界面周期总结').catch(e => console.error('[motion-memory] 界面周期总结失败: ' + (e && e.message)))
+      const targets = await periodTargets().catch(() => [])
+      const results = []
+      for (const ow of targets) {
+        const r = await scheduleWork('period', () => runPeriodSummary({ agent: 'memory-admin', session: '', turn: 0 }, true, false, {
+          scope: req.scope, scopeDetail: req.scopeDetail, from: req.from, to: req.to,
+          ignoreSummarized: !!req.ignoreSummarized, truncK: req.truncK, ownerKey: ow,
+        }), '界面周期总结（' + ow + '）').catch(e => ({ ok: false, text: String((e && e.message) || e) }))
+        results.push(ow + '：' + ((r && r.text) || '（无返回）'))
+      }
       // 处理完移除请求文件（tombstone）
       await tombstone(reqPath, reqPath)
-      console.log('[motion-memory] 界面周期总结请求已执行' + (resetTimer ? '（重置倒计时）' : ''))
+      console.log('[motion-memory] 界面周期总结请求已执行（' + targets.length + ' 个智能体）' + (resetTimer ? '（重置倒计时）' : '') + '：' + results.join('；'))
       return true
     } catch (e) { return false }
   }
@@ -6024,16 +6141,21 @@ function parseAdminJson(text) {
       } catch (e) { approved = false }
       if (!approved) return { ok: false, text: '周期总结需用户同意：请在设置界面手动触发，或用户批准后重试（本会话可用 memory cmd=period_run useSessionModel=true 用主力模型执行）' }
     }
-    const res = await scheduleWork('period', () => runPeriodSummary(meta, force, useSessionModel, {
-      scope: args && args.scope,
-      scopeDetail: args && args.scopeDetail,
-      from: args && args.from,
-      to: args && args.to,
-      ignoreSummarized: !!(args && args.ignoreSummarized),
-      truncK: args && args.truncK,
-    }), '周期总结（手动）')
-    if (!res.ok) return res
-    return res
+    const targets = await periodTargets().catch(() => [])
+    const results = []
+    for (const ow of targets) {
+      const r = await scheduleWork('period', () => runPeriodSummary(meta, force, useSessionModel, {
+        scope: args && args.scope,
+        scopeDetail: args && args.scopeDetail,
+        from: args && args.from,
+        to: args && args.to,
+        ignoreSummarized: !!(args && args.ignoreSummarized),
+        truncK: args && args.truncK,
+        ownerKey: ow,
+      }), '周期总结（手动·' + ow + '）').catch(e => ({ ok: false, text: String((e && e.message) || e) }))
+      results.push(ow + '：' + ((r && (r.text || (r.ok ? '已执行' : '失败'))) || '（无返回）'))
+    }
+    return { ok: true, text: '周期总结（' + targets.length + ' 个智能体）：\n' + results.join('\n') }
   }
   async function memCmdPeriodStatus(args, meta) {
     const pc = periodCfg()
