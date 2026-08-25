@@ -1,9 +1,9 @@
 {
-    "version":  "0.3.2",
+    "version":  "0.3.3",
     "files":  {
-                  "package.json":  "sha256:d4b5214cd92d6d0c684387217be9e29986ae09fe3278b7a1dd020cabafc74b96",
+                  "package.json":  "sha256:a8fe08cd00c99ae5fefb4cfb036add8591e9a9a741153446803152165001cdad",
                   "motion-memory-modules/session-log.mjs":  "sha256:6a9e4751993629d461a9202d269eb35bd13972753db99dac6c5baffc8dc0d626",
-                  "README.md":  "sha256:720c3c8a73461e4d098678de47aa4440caef15d9110bf04068b8b21ea1bd4b8c",
+                  "README.md":  "sha256:20e00394b8ee08518cd0480c4ba35a8b26015db62b79e5e2523726f6054a285e",
                   "motion-memory.js":  "sha256:00e5cd78df5acf02a7dbd9afc1d23e87feff21e502a3bbc849f44a970d337e5f",
                   "motion-memory-modules/text-utils.mjs":  "sha256:3baf9b00250f7e9adf3634d7890ce54c45c8d7bd7f62c840a1e5d182f3437f74",
                   "SETTINGS.md":  "sha256:93c00f14ef1b5209d0e987a8dc411802a882bceb1c19198c23578e9fa60b94f1",
@@ -13,6 +13,6 @@
                   "cordis.patch.yml":  "sha256:c72b9d6078c86609a71337dc1734bc1b70f54e037e5af036356a3c1b7f416fd1",
                   "motion-memory-modules/period-scope.mjs":  "sha256:377ed5ff89daf55363f9f454945dc3b773bf036f132fc71c46e98579c6485000",
                   "LICENSE":  "sha256:94a3e788ddff3370d7274338c3e811eb1bb00e4d6614cb6b2dd645324f2d4d17",
-                  "mm-settings/client.js":  "sha256:76274e25caf7455b70d0f27ce805c44c39b1eebeebecb41aaf425a74156720f7"
+                  "mm-settings/client.js":  "sha256:fddb624ed24e97f1501f39ebf46204eb176d49bdd02900648b511e17ce982730"
               }
 }

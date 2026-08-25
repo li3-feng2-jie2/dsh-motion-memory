@@ -260,7 +260,7 @@ window.__ModuleLoader__.load({
             },
           },
             React.createElement('option', { value: '' }, '（跟随全局' + (g.provider ? '：' + g.provider + '/' + g.model : '') + '）'),
-            React.createElement('option', { value: '__none__' }, '（无模型：不调模型，只记录用户消息）'),
+            (props.allowNone === true) ? React.createElement('option', { value: '__none__' }, '（无模型：不调模型，只记录用户消息）') : null,
             providers.map(function (pr) {
               return React.createElement('option', { key: pr.provider, value: pr.provider }, pr.displayName || pr.provider)
             }),
@@ -630,7 +630,7 @@ window.__ModuleLoader__.load({
         CheckRow('启用对话跟踪', !!(adm.track), function (e) { setA('track', e.target.checked) }, '自动总结对话内容'),
         adm.track ? React.createElement('div', { style: subCard },
           DescBlock('作用：每个会话按触发间隔把"对话轮次"压成一条记忆，并沉淀经验教训。\n触发：每轮对话结束时检查，按该会话记录的间隔决定是否总结；结果写入该会话的聚合记忆文件（turns[] 累积多轮），教训进重要关键词。\n无模型时：只把用户消息以引用形式累积到"无模型记忆整理"区，可经周期总结转正。'),
-          Row('模型配置', React.createElement(ModelConfigBlock, { value: adm.trackModel || {}, global: globalModel, providers: providers, onChange: function (v) { setA('trackModel', v) } }), '留空字段继承全局管理员模型参数；选「无模型」则不调用模型：每轮结束把该轮用户消息以 [用户消息](会话@轮次) 引用形式累积到无模型记忆整理区（每会话一个文件，标题=会话id，逐行追加），保持原始指向，可经周期总结/模型转正'),
+          Row('模型配置', React.createElement(ModelConfigBlock, { value: adm.trackModel || {}, global: globalModel, providers: providers, allowNone: true, onChange: function (v) { setA('trackModel', v) } }), '留空字段继承全局管理员模型参数；选「无模型」则不调用模型：每轮结束把该轮用户消息以 [用户消息](会话@轮次) 引用形式累积到无模型记忆整理区（每会话一个文件，标题=会话id，逐行追加），保持原始指向，可经周期总结/模型转正'),
           Row('触发间隔', Num({ value: adm.trackInterval === undefined || adm.trackInterval === null ? 0 : adm.trackInterval, onChange: function (e) { setA('trackInterval', Math.max(0, Number(e.target.value) || 0)) } }), '0=每轮总结；N=每 N 轮总结一次。首次总结时把间隔记录到该会话的记忆文件里，之后该会话按自己的记录判断（配置改了会新增一条记录），跨重启不丢'),
           CheckRow('修改当前活跃后通知注入', (adm.trackInjectActive === undefined ? false : !!adm.trackInjectActive), function (e) { setA('trackInjectActive', e.target.checked) }, '是：每轮新对话尝试注入当前活跃新变化（摘要，仅此一项）；否（默认）：不注入，模型需要时自行 memory_query，节约输入 token'),
           Row('摘要注入长度（字符）', Num({ value: cfg.summaryInjectChars || 300, onChange: function (e) { set('summaryInjectChars', Math.max(20, Number(e.target.value) || 300)) } }), '对话跟踪工具更新活跃摘要后，注入其他会话的摘要截取字符数（默认 300，中文语义完整；设小可省 token）'),
@@ -659,7 +659,7 @@ window.__ModuleLoader__.load({
         CheckRow('启用强化记忆搜索', !!(adm.enhance), function (e) { setA('enhance', e.target.checked) }, ''),
         adm.enhance ? React.createElement('div', { style: subCard },
           DescBlock('作用：帮 agent 做更广的记忆检索，避免只按字面词漏掉相关内容。\n触发：手动调用（memory_enhance mode=query），无定时。\n流程：模型读取「真实命中记忆 + 引用记忆展开 + 对话上下文」后输出扩展检索词和相关记忆；扩展词二次召回，相关项逐条做真实性校验，编造的直接忽略。'),
-          Row('模型配置', React.createElement(ModelConfigBlock, { value: adm.enhanceModel || {}, global: globalModel, providers: providers, onChange: function (v) { setA('enhanceModel', v) } }), '子级留空字段继承全局管理员模型参数'),
+          Row('模型配置', React.createElement(ModelConfigBlock, { value: adm.enhanceModel || {}, global: globalModel, providers: providers, onChange: function (v) { setA('enhanceModel', v) } }), '必须选择模型：留空跟随记忆管理员模型，管理员未配置则强化搜索不运行（只有对话跟踪支持无模型）'),
           Row('查阅深度', Num({ value: adm.enhanceMaxDepth || 3, onChange: function (e) { setA('enhanceMaxDepth', Number(e.target.value) || 3) } }), '展开命中记忆的关联层数'),
         ) : null,
       ))
@@ -670,7 +670,7 @@ window.__ModuleLoader__.load({
         CheckRow('启用周期总结', !!(adm.period), function (e) { setA('period', e.target.checked) }, '定时自动总结事件记忆'),
         adm.period ? React.createElement('div', { style: subCard },
           DescBlock('作用：每隔一段时间把"未总结过的事件记忆"批量压缩成一份周期总结，防止事件越积越多。\n触发：后台每分钟检查一次，距上次周期总结 ≥ 设定时长即触发。\n筛选：按影响度（查询次数权重 + 时间衰减）排序取前 N% 或前 N 个。\n输出：周期记忆文件（记录覆盖的事件溯源），已覆盖事件打上 summarizedAt 标记。'),
-          Row('模型配置', React.createElement(ModelConfigBlock, { value: adm.periodModel || {}, global: globalModel, providers: providers, onChange: function (v) { setA('periodModel', v) } }), '子级留空字段继承全局管理员模型参数'),
+          Row('模型配置', React.createElement(ModelConfigBlock, { value: adm.periodModel || {}, global: globalModel, providers: providers, onChange: function (v) { setA('periodModel', v) } }), '必须选择模型：留空跟随记忆管理员模型，管理员未配置则周期总结不运行（只有对话跟踪支持无模型）'),
           Row('周期定时（日 + 时）', React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
             Num({ value: adm.periodDays || 1, onChange: function (e) { setA('periodDays', Number(e.target.value) || 1) } }),
             React.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '日'),
