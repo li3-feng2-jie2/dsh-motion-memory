@@ -1018,6 +1018,7 @@ function MemoryView(props) {
     setScrollPos({})
     if (scrollBoxRef.current) scrollBoxRef.current.scrollTop = 0
     try { window.scrollTo(0, 0) } catch (e) {}  // 兜底外层页面滚动（DSH 布局可能由外层容器滚动）
+  }
   var turns = React.useState(null)
   var turnsV = turns[0]
   var setTurns = turns[1]
