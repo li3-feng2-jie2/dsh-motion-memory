@@ -73,6 +73,13 @@ export function apply(ctx) {
     defaultConfig, cfg, pluginGitDir, pluginDir,
     setReaderFirstFrames, setMemFiles,
   } = core
+  // ── 会话日志帧级读取（B 档拆分）：须先于 MemFiles（buildSessionRef 是 const 解构，TDZ 不可后置引用）
+  const {
+    sessionLogPathOf, readSessionLogFrames, readSessionEvents,
+    readSessionEventsFirstFrames, readSessionTitleFromLog, buildSessionRef,
+  } = createSessionLogReader({ p, state, ctx })
+  // 注入 session-log 的限帧读取（sessionPresetOfAsync 兜底用）
+  setReaderFirstFrames(readSessionEventsFirstFrames)
   const MemFiles = createMemFiles({
     p, root, readJson, writeJson, listFiles, isTombstone, relOf, uniquePath,
     sanitizeFile, histEntry, newKeywordObj, eventFileName, uid, nowIso, ymPath,
@@ -115,14 +122,7 @@ export function apply(ctx) {
   // （ZSTD_MAGIC/encodeSegment/projectKeyOf/sessionLogsRoot/scanZstdFrames 已拆至
   //   ../motion-memory-modules/session-log.js）
   // ── 会话日志帧级读取（②-A 缓存 + ②-B 帧级定位）──────────────────
-  // （已拆至 ../motion-memory-modules/session-log.mjs：createSessionLogReader 工厂，
-  //   readSessionEventsFirstFrames/readSessionTitleFromLog/buildSessionRef）
-  const {
-    sessionLogPathOf, readSessionLogFrames, readSessionEvents,
-    readSessionEventsFirstFrames, readSessionTitleFromLog, buildSessionRef,
-  } = createSessionLogReader({ p, state, ctx })
-  // 注入 session-log 的限帧读取（sessionPresetOfAsync 兜底用，须在解构之后）
-  setReaderFirstFrames(readSessionEventsFirstFrames)
+  // （已拆至 ../motion-memory-modules/session-log.mjs——createSessionLogReader 解构已提前至 MemFiles 之前）
 
   // 超长文本中部省略：已拆至 ../motion-memory-modules/event-text.mjs（trimTextMiddle，顶层 import 同名引入）
   function trimCap(cap) {
