@@ -1096,6 +1096,13 @@ export function apply(ctx) {
         if (patch.indexScore[k] !== undefined && patch.indexScore[k] !== c.indexScore[k]) { c.indexScore[k] = patch.indexScore[k]; changed = true }
       }
     }
+    // activeUsageScore（当前活跃启用得分）子对象
+    if (patch.activeUsageScore && typeof patch.activeUsageScore === 'object') {
+      c.activeUsageScore = c.activeUsageScore || {}
+      for (const k of ['enabled', 'score', 'boost']) {
+        if (patch.activeUsageScore[k] !== undefined && patch.activeUsageScore[k] !== c.activeUsageScore[k]) { c.activeUsageScore[k] = patch.activeUsageScore[k]; changed = true }
+      }
+    }
     // dedupJudge（LLM 写入消歧）子对象
     if (patch.dedupJudge && typeof patch.dedupJudge === 'object') {
       c.dedupJudge = c.dedupJudge || {}

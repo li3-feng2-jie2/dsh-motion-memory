@@ -560,6 +560,9 @@ export function createCore(ctx) {
       rootUserSet: false,
       // 检索时间衰减（天）：周期/活跃索引引用得分按此线性衰减（默认 30 天 100%→20%）
       decayDays: 30,
+      // 当前活跃启用得分（v6）：模型通过上下文判断挂回/晋升时触发计分——补充区记忆挂回当前活跃 +score；
+      // 移动回重要 +score×boost（短时间多分）
+      activeUsageScore: { enabled: false, score: 1, boost: 2 },
       // 活跃索引 score 参数（v5 可配置）：初始分 + 衰减下限 + 淘汰阈值
       indexScore: {
         period: 5, event: 3, keyword: 2,

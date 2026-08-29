@@ -496,6 +496,12 @@ window.__ModuleLoader__.load({
         var next = Object.assign({}, base, { indexScore: Object.assign({}, base.indexScore || {}, Object.defineProperty({}, k, { value: v, enumerable: true, writable: true, configurable: true })) })
         cfgRef.current = next; setCfg(next); scheduleSave()
       }
+      // 当前活跃启用得分子对象：{enabled, score, boost}
+      function setUsageScore(k, v) {
+        var base = cfgRef.current || cfg
+        var next = Object.assign({}, base, { activeUsageScore: Object.assign({}, base.activeUsageScore || {}, Object.defineProperty({}, k, { value: v, enumerable: true, writable: true, configurable: true })) })
+        cfgRef.current = next; setCfg(next); scheduleSave()
+      }
       function doIsolation() {
         var t = new Date(targetTime)
         if (Number.isNaN(t.getTime())) { setMsg('请先填写回溯目标时间'); return }
@@ -558,6 +564,12 @@ window.__ModuleLoader__.load({
           Row('淘汰阈值', Num({ value: (cfg.indexScore && cfg.indexScore.threshold !== undefined) ? cfg.indexScore.threshold : 0.3, onChange: function (e) { setIndex('threshold', Number(e.target.value) || 0.3) } }), '衰减后得分低于此值则从索引移除'),
           Row('索引最大条数', Num({ value: (cfg.indexScore && cfg.indexScore.maxRefs) || 50, onChange: function (e) { setIndex('maxRefs', Number(e.target.value) || 50) } }), 'active.json refs 最多保留条数'),
           Row('事件扫描月份', Num({ value: (cfg.indexScore && cfg.indexScore.scanMonths) || 3, onChange: function (e) { setIndex('scanMonths', Number(e.target.value) || 3) } }), '事件区按年月目录定向扫描的窗口（新→旧，最近 N 个月）'),
+        ),
+        Collapse({ title: '当前活跃启用得分', hint: '挂回/晋升计分', defaultOpen: false },
+          React.createElement('div', { style: subHintStyle }, '模型通过上下文判断：补充区记忆挂回当前活跃、或移动回重要时触发计分（写入/查询时说明理由）。'),
+          Row('启用', Check({ checked: !!(cfg.activeUsageScore && cfg.activeUsageScore.enabled), onChange: function (e) { setUsageScore('enabled', e.target.checked) } }), '开=阅读挂回/晋升时按分值计分'),
+          Row('单次分值', Num({ value: (cfg.activeUsageScore && cfg.activeUsageScore.score) || 1, onChange: function (e) { setUsageScore('score', Math.max(0, Number(e.target.value) || 1)) } }), '补充区记忆挂回当前活跃，每次 +N 分'),
+          Row('晋升加成倍数', Num({ value: (cfg.activeUsageScore && cfg.activeUsageScore.boost) || 2, onChange: function (e) { setUsageScore('boost', Math.max(1, Number(e.target.value) || 2)) } }), '移动回重要 = 单次分值 × 倍数（短时间多分）'),
         ),
         Row('活跃变更通知', Check({ checked: cfg.activeNotify !== false, onChange: function (e) { set('activeNotify', e.target.checked) } }), '对话跟踪工具每轮总结后，向其他会话注入记忆变更通知（默认开；关掉后本机各会话不再收到跨会话变更提示）'),
       ))
@@ -1006,6 +1018,13 @@ function MemoryView(props) {
   var editStateS = React.useState(null)
   var editState = editStateS[0]
   var setEditState = editStateS[1]
+  // 活跃页历史记录：分类过滤（默认增量更新+遗忘更新）+ 分页加载
+  var histCatS = React.useState('default')
+  var histCat = histCatS[0]
+  var setHistCat = histCatS[1]
+  var histPageS = React.useState(1)
+  var histPage = histPageS[0]
+  var setHistPage = histPageS[1]
   var scrollPos = React.useState({})
   var scrollPosV = scrollPos[0]
   var setScrollPos = scrollPos[1]
@@ -2082,6 +2101,54 @@ function MemoryView(props) {
               )
             })
           : React.createElement('div', { style: mmEmpty }, '（暂无会话工作信息）'),
+      ),
+      // ④ 历史记录（分类过滤默认"增量更新+遗忘更新"；按设置条数分页，加载更多直到创建位置）
+      React.createElement('div', { style: { marginBottom: 8 } },
+        React.createElement('div', { style: { fontWeight: 600, fontSize: 12, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+          '历史记录（' + ((activeV.history || []).length) + ' 条）',
+          React.createElement('select', { style: Object.assign({}, inputStyle, { width: 180, fontSize: 12 }), value: histCat, onChange: function (e) { setHistCat(e.target.value); setHistPage(1) } },
+            React.createElement('option', { value: 'default' }, '增量更新+遗忘更新'),
+            React.createElement('option', { value: 'update' }, '仅增量更新'),
+            React.createElement('option', { value: 'forget' }, '仅遗忘更新'),
+            React.createElement('option', { value: 'necessary' }, '必要记忆'),
+            React.createElement('option', { value: 'move' }, '移动/归档'),
+            React.createElement('option', { value: 'all' }, '全部'),
+          ),
+        ),
+        (function () {
+          var histAll = (activeV.history || []).slice()
+          var histInCat = function (h) {
+            if (histCat === 'all') return true
+            if (histCat === 'default') return h.op === 'update' || h.op === 'forget-update' || h.op === 'forget' || h.op === 'necessary'
+            if (histCat === 'update') return h.op === 'update'
+            if (histCat === 'forget') return h.op === 'forget-update' || h.op === 'forget'
+            if (histCat === 'necessary') return h.op === 'necessary'
+            if (histCat === 'move') return h.op === 'move'
+            return true
+          }
+          var histFiltered = histAll.filter(histInCat)
+          var histPer = Math.max(5, Number(cfgV && cfgV.historyPageSize) || 20)
+          var histShown = histFiltered.slice(0, Math.max(histPer, histPage * histPer))
+          var opName = function (op) { return ({ update: '增量更新', 'forget-update': '遗忘更新', forget: '遗忘', necessary: '必要记忆', move: '移动', restore: '恢复', create: '创建', query: '查询' })[op] || (op || '记录') }
+          return React.createElement('div', {},
+            histShown.length
+              ? histShown.map(function (h, hi) {
+                  return React.createElement('div', { key: hi, style: { display: 'flex', gap: 6, padding: '2px 0', borderBottom: '1px dashed var(--dsw-alias-border-l1)', fontSize: 11, color: 'var(--dsw-alias-label-secondary)' } },
+                    React.createElement('span', { style: { flexShrink: 0 } }, String(h.at || '').slice(0, 16).replace('T', ' ')),
+                    React.createElement('span', { style: { flexShrink: 0, color: 'var(--dsw-alias-label-primary)' } }, opName(h.op)),
+                    React.createElement('span', { style: { flex: 1, wordBreak: 'break-all' } }, String(h.note || '')),
+                    React.createElement('span', { style: { flexShrink: 0 } }, String(h.agent || '').slice(-16)),
+                  )
+                })
+              : React.createElement('div', { style: mmEmpty }, '（该分类无历史记录）'),
+            histFiltered.length > histShown.length
+              ? React.createElement('button', { style: mmBtn, onClick: function () { setHistPage(histPage + 1) } }, '加载更早历史（' + (histFiltered.length - histShown.length) + ' 条）')
+              : null,
+            histPage > 1
+              ? React.createElement('button', { style: Object.assign({}, mmBtn, { marginLeft: 4 }), onClick: function () { setHistPage(1) } }, '收起')
+              : null,
+          )
+        })(),
       ),
       React.createElement('div', { style: mmEmpty }, '最近动作：' + (activeV.lastAction || '（无）') + ' · 更新于 ' + (activeV.updatedAt || '') + (activeV.migrated ? ' · 已从旧版迁移' : '')),
       (activeV.migrateReport && activeV.migrateReport.items && activeV.migrateReport.items.length) ? React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-state-warn-primary)', whiteSpace: 'pre-wrap' } }, '迁移报告：' + activeV.migrateReport.items.join('；')) : null,

@@ -164,6 +164,7 @@ export function apply(ctx) {
       root: '', recordModel: { provider: '', model: '' },
       recentOverviewN: 3, cascadeDepth: 3, archiveDays: 30,
       queryHistoryN: 0, updateHistoryN: 0, historyPageSize: 20,
+      activeUsageScore: { enabled: false, score: 1, boost: 2 },
       admin: {
         enabled: false, model: { provider: '', model: '' },
         contextTokens: 128000, summaryPercent: 50,
@@ -474,6 +475,7 @@ export function apply(ctx) {
         recentOverviewN: c.recentOverviewN || 3, archiveDays: c.archiveDays || 30,
         cascadeDepth: c.cascadeDepth === undefined ? 3 : c.cascadeDepth,
         queryHistoryN: c.queryHistoryN || 0, updateHistoryN: c.updateHistoryN || 0, historyPageSize: c.historyPageSize || 20, queryOtherAgents: !!c.queryOtherAgents,
+        activeUsageScore: c.activeUsageScore || { enabled: false, score: 1, boost: 2 },
         decayDays: c.decayDays || 30, activeNotify: c.activeNotify !== false, readTrimChars: c.readTrimChars || 500,
         recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
         admin: {
@@ -716,6 +718,15 @@ export function apply(ctx) {
           }
           const hasModel = !!(a.model && a.model.provider && a.model.model)
           if (hasModel !== !!a.enabled) { a.enabled = hasModel; changed = true }
+        }
+        // 子对象透传（indexScore / activeUsageScore / dedupJudge / semanticSearch）：整对象合并保存
+        for (const sk of ['indexScore', 'activeUsageScore', 'dedupJudge', 'semanticSearch']) {
+          if (patch[sk] && typeof patch[sk] === 'object') {
+            c[sk] = c[sk] || {}
+            for (const k of Object.keys(patch[sk])) {
+              if (patch[sk][k] !== undefined && patch[sk][k] !== c[sk][k]) { c[sk][k] = patch[sk][k]; changed = true }
+            }
+          }
         }
         if (changed) await writeCfg(c)
         return { ok: true, ...flatten(c) }
