@@ -1843,12 +1843,10 @@ function MemoryView(props) {
                     } }, '修改'),
                         noModel
                           ? React.createElement('button', { style: mmBtn, onClick: function () {
-                              // 无模型记录转正：触发模型总结（成功后生成事件文件并删除无模型记录）
+                              // 无模型记录转正：弹窗选「当前活跃记忆总结 / 当时活跃记忆总结」后执行（与重新总结一致）
                               var tno2 = Number((it.ref.match(/@(\d+)/) || [])[1]) || 0
                               if (!tno2) { setMsg('无法解析轮次'); return }
-                              askConfirm('用模型总结轮次 ' + tno2 + '（当前活跃记忆总结）？', function () {
-                                doResummarize((it.ref.split('@')[0] || ''), tno2, 'current')
-                              })
+                              setRereviewTurn({ sid: (it.ref.split('@')[0] || ''), turn: tno2 })
                             } }, '模型总结')
                           : React.createElement('button', { style: mmBtn, onClick: function () {
                               // 重新总结：弹窗选「当前活跃记忆总结 / 当时活跃记忆总结」后执行
@@ -2122,7 +2120,8 @@ function MemoryView(props) {
           ),
         ),
         (function () {
-          var histAll = (activeV.history || []).slice()
+          // 时间倒序：最新在前（history 数组本身为追加序）
+          var histAll = (activeV.history || []).slice().reverse()
           var histInCat = function (h) {
             if (histCat === 'all') return true
             if (histCat === 'default') return h.op === 'update' || h.op === 'forget-update' || h.op === 'forget' || h.op === 'necessary'
