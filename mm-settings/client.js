@@ -1014,6 +1014,9 @@ function MemoryView(props) {
     // 切页签时关闭所有超链接弹窗（弹窗残留会遮挡/干扰新页面）
     if (popupV && popupV.length) popupClear()
     setTabRaw(id)
+    // 切页签立即滚回顶部（不等 effect：快速切换时旧页可能滚在底部，新内容渲染后停在顶部）
+    setScrollPos({})
+    if (scrollBoxRef.current) scrollBoxRef.current.scrollTop = 0
   }
   var turns = React.useState(null)
   var turnsV = turns[0]
@@ -1048,6 +1051,8 @@ function MemoryView(props) {
   var setScrollPos = scrollPos[1]
   // 滚动容器 ref：切页签/进出会话时滚回顶部（跨页签恢复上次滚动位置会造成"新内容从底部出现"）
   var scrollBoxRef = React.useRef(null)
+  // 请求序号：快速切换页签时多个异步查询并发，响应按序号校验——过期响应直接丢弃，避免旧数据覆盖新页/滚动跳动
+  var reqSeqRef = React.useRef(0)
   // 页面内确认浮层（替代 window.confirm：嵌入环境可能被拦截导致点击无反应）
   var confirmS = React.useState(null)
   var confirmState = confirmS[0]
@@ -1395,6 +1400,8 @@ function MemoryView(props) {
       : t === 'active' ? !!activeV
       : !!periodsV
     if (!force && has) return
+    // 请求序号：本次请求的标识；响应回来时若序号已过期（期间又切换/刷新了页）则丢弃
+    var mySeq = ++reqSeqRef.current
     setBusy(true)
     var p = Promise.resolve()
     // 时间范围：'YYYY-MM-DD' → 毫秒（from=当天0点，to=当天23:59:59）；opts 可显式传（onChange 里 state 未更新）
@@ -1406,11 +1413,12 @@ function MemoryView(props) {
     if (t === 'kws') setKws(force ? null : kwsV)
     if (t === 'active') setActive(force ? null : activeV)
     if (t === 'periods') setPeriods(force ? null : periodsV)
-    if (t === 'turns') p = callHost('mm-turn-list', { sid: focusSidV || (scopeAllV ? '' : (sessionId || '')), from: 0, to: 0, includeArchive: searchArchV, force: force }).then(function (r) { setTurns((r && r.items) || []); setTurnRange((r && r.turnRange) || null); setTrackMetaMap((r && r.trackMetaMap) || {}) })
+    if (t === 'turns') p = callHost('mm-turn-list', { sid: focusSidV || (scopeAllV ? '' : (sessionId || '')), from: 0, to: 0, includeArchive: searchArchV, force: force }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setTurns((r && r.items) || []); setTurnRange((r && r.turnRange) || null); setTrackMetaMap((r && r.trackMetaMap) || {}) })
     // 会话记忆页：列表态加载会话列表；进入某会话（focusSidV 非空）时加载该会话轮次
     if (t === 'sessions') {
-      if (focusSidV) p = callHost('mm-turn-list', { sid: focusSidV, from: fMs || 0, to: tMs || 0, includeArchive: searchArchV, force: force }).then(function (r) { setTurns((r && r.items) || []) })
+      if (focusSidV) p = callHost('mm-turn-list', { sid: focusSidV, from: fMs || 0, to: tMs || 0, includeArchive: searchArchV, force: force }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setTurns((r && r.items) || []) })
       else p = callHost('mm-session-list', { force: force }).then(function (r) {
+        if (mySeq !== reqSeqRef.current) return
         setSessions((r && r.items) || [])
         // 首次打开会话记忆页时，时间选择范围 = 记忆文件最新 ~ 最旧
         var gr = r && r.globalRange
@@ -1425,11 +1433,13 @@ function MemoryView(props) {
       if (kwArchV) {
         var ra = rangeSwap(kwFromV, kwToV)
         p = callHost('mm-keyword-archive', { from: ra.from, to: ra.to }).then(function (r) {
+          if (mySeq !== reqSeqRef.current) return
           setKws((r && r.items) || [])
           setKwArchMeta({ oldest: (r && r.oldestArchiveAt) || 0, newest: (r && r.newestArchiveAt) || 0 })
         })
       } else {
         p = callHost('mm-keyword-list', {}).then(function (r) {
+          if (mySeq !== reqSeqRef.current) return
           var items = (r && r.items) || []
           setKws(items); setKwArchMeta(null); setKwImpCache(items)
           // 首次加载：默认填充时间选择 = 重要区记忆最旧 ~ 最新（常规方向；不空；之后用户手改不覆盖）
@@ -1446,8 +1456,9 @@ function MemoryView(props) {
         })
       }
     }
-    if (t === 'active') p = callHost('mm-active-read', { session: sessionId || '', agent: activeAgentV || undefined }).then(function (r) { setActive((r && r.data) || null) })
+    if (t === 'active') p = callHost('mm-active-read', { session: sessionId || '', agent: activeAgentV || undefined }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setActive((r && r.data) || null) })
     if (t === 'periods') p = callHost('period-history', { from: fMs || 0, to: tMs || 0 }).then(function (r) {
+      if (mySeq !== reqSeqRef.current) return
       var items = (r && r.items) || []
       setPeriods(items)
       // 首次打开：默认填充时间 = 周期文件最早 ~ 最晚（不空）
@@ -1463,7 +1474,7 @@ function MemoryView(props) {
         if (pmn) { setTimeFrom(pmn); setTimeTo(pmx) }
       }
     })
-    p.catch(function (e) { setMsg('加载失败: ' + String((e && e.message) || e)) }).finally(function () { setBusy(false) })
+    p.catch(function (e) { if (mySeq === reqSeqRef.current) setMsg('加载失败: ' + String((e && e.message) || e)) }).finally(function () { if (mySeq === reqSeqRef.current) setBusy(false) })
   }
   // 保存轮次总结编辑（编辑已有或新增缺失轮次）；失焦自动保存与保存按钮共用
   function saveTurnEdit() {
