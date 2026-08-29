@@ -767,6 +767,9 @@ export function apply(ctx) {
         let withinImportant = 0, withinPeriod = 0, withinEvents = 0
         for (const f of files) {
           const rel = relOf(f.path, r)
+          // 新方案：散事件（旧格式/无会话上下文，文件名非 session-* 的事件文件）不统计不读取；
+          // 仅兼容阅读查询（memory_query），扫描/统计只认会话聚合文件
+          if (/^session-[\w-]+\.json$/.test(f.name) === false && /\d{4}\/\d{2}(?:\/|_)\d{2}(?:\/|_)/.test('/' + rel)) continue
           const o = await readJson(f.path)
           if (!o || isTombstone(o)) continue
           const created = parseIso(o.createdAt) || 0
@@ -783,7 +786,8 @@ export function apply(ctx) {
             noModel++
             if (isToday) todayEvents++
             if (last > cutoff) withinEvents++
-          } else if (/\d{4}\/\d{2}\/\d{2}(?:\/|_)/.test('/' + rel)) {
+          } else if (/^session-[\w-]+\.json$/.test(f.name)) {
+            // 新方案：事件只统计会话聚合文件（散事件/旧格式不扫描，顶多兼容阅读查询）
             events++; if (isToday) todayEvents++; if (last > cutoff) withinEvents++
           }
         }
@@ -965,52 +969,33 @@ export function apply(ctx) {
         let gMin = 0, gMax = 0
         for (const f of files) {
           const rel = relOf(f.path, r)
-          // v5 对话跟踪聚合文件为 年/月/session-<sid>.json（年月两级）；散事件为 年/月/日 或 年/月/日_
           if (!/\d{4}\/\d{2}(?:\/|_)(?:\d{2}(?:\/|_))?/.test('/' + rel)) continue
           if (rel.indexOf('周期记忆/') >= 0 || rel.indexOf('补充/') >= 0 || rel.indexOf('无模型记忆整理/') >= 0) continue
-          // 路径拼装优先：聚合文件（session-<sid>.json）直接读（数量少）；散事件只从文件名解析 sid（零内容读取），
-          // 对应记忆文件的内容在点击进入会话（轮次视图 mm-turn-list）时按 sid 定向加载
-          const isAgg = /session-[\w-]+\.json$/.test(f.name)
-          let sid = ''
-          let o = null
-          if (isAgg) {
-            o = await readJson(f.path)
-            if (!o || o.tombstone || o.kind !== 'event') continue
-            sid = f.name.slice('session-'.length, -'.json'.length)
-          } else {
-            const m = String(f.name).match(/session-([\w-]+)/)
-            if (!m) continue  // 无 session 段的散事件（早期手动事件）不在列表归并
-            sid = m[1]
-          }
+          // 新方案：会话全部走聚合文件（年/月/session-<sid>.json）——只读聚合文件，散事件（旧格式/无会话上下文）不扫描不显示
+          if (!/session-[\w-]+\.json$/.test(f.name)) continue
+          const o = await readJson(f.path)
+          if (!o || o.tombstone || o.kind !== 'event') continue
+          const sid = f.name.slice('session-'.length, -'.json'.length)
           const cur = map.get(sid) || { sid, turns: 0, firstAt: '', lastAt: '', title: '', summary: '', records: [] }
-          if (o) {
-            // 聚合文件：轮次统计 + 时间范围 + 摘要（content 首行）
-            const turns = Array.isArray(o.turns) ? o.turns.length : (o.links && Array.isArray(o.links.children) ? o.links.children.filter(l => l && l.kind === 'turn').length : 1)
-            cur.turns += turns
-            const ats = []
-            if (Array.isArray(o.turns) && o.turns.length) {
-              for (const t of o.turns) { if (t && t.at) ats.push(String(t.at)) }
-            }
-            ats.push(o.updatedAt || o.createdAt || '')
-            for (const a of ats) {
-              if (!a) continue
-              if (!cur.firstAt || a < cur.firstAt) cur.firstAt = a
-              if (!cur.lastAt || a > cur.lastAt) cur.lastAt = a
-            }
-            const contentFirst = String(o.content || '').split('\n')[0].slice(0, 80)
-            if (contentFirst && (!cur.summary || (o.updatedAt || '') > (cur.lastAt || ''))) cur.summary = contentFirst
-            cur.records.push({ rel, turnCount: turns, title: o.title || '', at: o.updatedAt || o.createdAt || '' })
-            const gCreated = parseIso(o.createdAt || '')
-            const gUpdated = parseIso(o.updatedAt || '') || gCreated
-            if (gCreated && (!gMin || gCreated < gMin)) gMin = gCreated
-            if (gUpdated && gUpdated > gMax) gMax = gUpdated
-          } else {
-            // 散事件：按文件名计数 1 轮，时间用文件 mtime 近似（内容在轮次视图按需加载）
-            cur.turns += 1
-            const mtime = new Date(f.mtimeMs || 0).toISOString()
-            if (!cur.lastAt || mtime > cur.lastAt) cur.lastAt = mtime
-            if (!cur.firstAt || mtime < cur.firstAt) cur.firstAt = mtime
+          const turns = Array.isArray(o.turns) ? o.turns.length : (o.links && Array.isArray(o.links.children) ? o.links.children.filter(l => l && l.kind === 'turn').length : 1)
+          cur.turns += turns
+          const ats = []
+          if (Array.isArray(o.turns) && o.turns.length) {
+            for (const t of o.turns) { if (t && t.at) ats.push(String(t.at)) }
           }
+          ats.push(o.updatedAt || o.createdAt || '')
+          for (const a of ats) {
+            if (!a) continue
+            if (!cur.firstAt || a < cur.firstAt) cur.firstAt = a
+            if (!cur.lastAt || a > cur.lastAt) cur.lastAt = a
+          }
+          const contentFirst = String(o.content || '').split('\n')[0].slice(0, 80)
+          if (contentFirst && (!cur.summary || (o.updatedAt || '') > (cur.lastAt || ''))) cur.summary = contentFirst
+          cur.records.push({ rel, turnCount: turns, title: o.title || '', at: o.updatedAt || o.createdAt || '' })
+          const gCreated = parseIso(o.createdAt || '')
+          const gUpdated = parseIso(o.updatedAt || '') || gCreated
+          if (gCreated && (!gMin || gCreated < gMin)) gMin = gCreated
+          if (gUpdated && gUpdated > gMax) gMax = gUpdated
           map.set(sid, cur)
         }
         const items = [...map.values()].sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || ''))
