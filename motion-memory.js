@@ -17,14 +17,15 @@ import { createHash } from 'node:crypto'
 // 原生 fs：仅用于读写插件自身持久化配置（~/.dsh/profiles/web/motion-memory.config.json），
 // 固定位置不随工作区/会话漂移；记忆文件仍走 ctx.fs（沙箱）。
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync, rmdirSync, unlinkSync } from 'node:fs'
-import { zstdDecompressSync } from 'node:zlib'
+// zstdDecompressSync 已随会话日志读取拆至 motion-memory-modules/session-log.mjs
 // 版本更新检查（v0.1.x）：git 绑定安装时用 git fetch/pull 检查并更新
 import { execFile as execFileCb } from 'node:child_process'
 // import { installAdmin } from './motion-admin.js'
 // 周期总结模块（拆分）：素材档位纯逻辑
 import { SCOPE_DEFAULTS, scopeLabelOf } from './motion-memory-modules/period-scope.mjs'
-// 会话日志帧级读取模块（拆分）：路径推导 + zstd 帧扫描（纯函数）
-import { ZSTD_MAGIC, encodeSegment, projectKeyOf, sessionLogsRoot, scanZstdFrames, sessionLogPathOf as sessionLogPathOfMod } from './motion-memory-modules/session-log.mjs'
+// 会话日志帧级读取模块（拆分）：路径推导 + zstd 帧扫描 + 状态化读取工厂
+// （ZSTD_MAGIC/encodeSegment/projectKeyOf/sessionLogsRoot/scanZstdFrames/sessionLogPathOf
+//   已拆至 motion-memory-modules/session-log.mjs；createSessionLogReader 工厂在 apply 内注入）
 // 文本工具模块（拆分）：段落/句子切分、diff、历史重建、delta 摘要（纯函数）
 import { splitParagraphs, splitSentences, diffParagraph, diffContent, applyInverseParagraph, applyInverse, reconstructAt, deltaOverlap, trunc, deltaSummary, opLabel } from './motion-memory-modules/text-utils.mjs'
 // 分块/估算模块（拆分）：token 估算、批次摘要、单块预算、句子切块、末尾小段合并（纯函数）
@@ -35,6 +36,10 @@ import { pad, nowIso, parts, ymdPath, ymPath, isEventRel, stamp, ymdCompact, par
 import { histEntry, turnRefOfMeta, newKeywordObj, sanitizeFile, eventFileName } from './motion-memory-modules/memory-objects.mjs'
 // 事件文本提取模块（拆分，A 档）：内容块文本化、token 用量、step 文本、超长省略（纯函数）
 import { textOfContent, usageOf, stepTextOf, trimTextMiddle } from './motion-memory-modules/event-text.mjs'
+// 记忆文件对象管理模块（拆分，B 档）：MemFiles 工厂（7 类记忆文件 load/save/migrate，依赖注入）
+import { createMemFiles } from './motion-memory-modules/mem-files.mjs'
+// 会话日志状态化读取模块（拆分，B 档）：帧级增量读取/事件读取/标题读取工厂（依赖注入）
+import { createSessionLogReader } from './motion-memory-modules/session-log.mjs'
 
 export const name = 'motion-memory'
 
@@ -368,202 +373,14 @@ export function apply(ctx) {
   // UE5 类比：每类 USTRUCT 配序列化方法；schemaVersion 即存档版本，
   // load 时读到旧版本自动 migrate 到当前结构，写盘统一走 save。
   // ═════════════════════════════════════════════════════════════════════
-  const MemFiles = {}
+  // （已拆至 ../motion-memory-modules/mem-files.mjs——工厂 createMemFiles(deps) 注入依赖）
+  const MemFiles = createMemFiles({
+    p, root, readJson, writeJson, listFiles, isTombstone, relOf, uniquePath,
+    sanitizeFile, histEntry, newKeywordObj, eventFileName, uid, nowIso, ymPath,
+    buildSessionRef, withActiveParents,
+    importantDir, dailyBaseDir, periodBaseDir, necessaryDir, noModelDir, isolationDir, activeDir,
+  })
 
-  // ── 基类：公共路径/读取/版本判断 ────────────────────────────────────
-  class MemFileBase {
-    static schemaVersion = 1
-    static dir() { return root() }
-    static isVersion(obj) { return !!(obj && obj.schemaVersion === this.schemaVersion) }
-    // 读取：不存在 → null；tombstone → null；旧版本 → 自动迁移（就地转换并写回）
-    static async load(path) {
-      const o = await readJson(path)
-      if (!o || isTombstone(o)) return null
-      if (!this.isVersion(o)) {
-        const migrated = await this.migrate(o)
-        if (migrated) { await writeJson(path, migrated); console.log('[motion-memory] ' + this.name + ' 自动迁移: ' + relOf(path) + ' → v' + this.schemaVersion) }
-        return migrated
-      }
-      return o
-    }
-    // 子类实现
-    static async migrate(o) { return o }
-  }
-
-  // ── 关键词记忆（重要/补充）──────────────────────────────────────────
-  class KeywordMemory extends MemFileBase {
-    static schemaVersion = 1
-    static dir() { return importantDir() }
-    static path(title) { return p(this.dir(), sanitizeFile(title) + '.json') }
-    static async load(title) { return super.load(this.path(title)) }
-    static async save(obj) {
-      const meta = { agent: obj.agent || '', session: obj.session || '', turn: obj.turn || 0 }
-      const base = newKeywordObj(obj.title, obj.content, obj.reason, meta, obj.links)
-      const merged = { ...base, ...obj, schemaVersion: this.schemaVersion }
-      await writeJson(this.path(merged.title), merged)
-      return merged
-    }
-  }
-
-  // ── 事件记忆（对话跟踪聚合/手动）────────────────────────────────────
-  class EventMemory extends MemFileBase {
-    static schemaVersion = 1
-    static dir() { return dailyBaseDir() }
-    static ymDir(d) { return p(this.dir(), ymPath(d || new Date())) }
-    static async load(path) { return super.load(path) }
-    static async save(obj) {
-      const d = new Date()
-      const meta = { agent: obj.agent || 'memory-admin', session: obj.session || '', turn: obj.turn || 0 }
-      const base = {
-        schemaVersion: 1, id: uid(), kind: 'event', location: 'daily', readonly: true,
-        title: obj.title, reason: obj.reason || '', content: obj.content,
-        links: withActiveParents(obj.links || { parents: [], children: [{ kind: 'turn', ref: meta.session + '@' + meta.turn, location: 'session' }] }, meta),
-        sessionRef: buildSessionRef(meta.session, meta.turn),
-        createdAt: nowIso(), updatedAt: nowIso(), lastAccessedAt: nowIso(),
-        createdBy: meta, lastModifiedBy: meta, originalId: null,
-        history: [histEntry('create', { ...meta, note: 'MemFiles 创建事件' })],
-      }
-      const existing = await listFiles(this.ymDir(d), false)
-      const seq = existing.length + 1
-      const path = await uniquePath(this.ymDir(d), eventFileName(meta, d, seq))
-      await writeJson(path, { ...base, ...obj, schemaVersion: 1 })
-      return { path, obj: base }
-    }
-  }
-
-  // ── 周期记忆 ────────────────────────────────────────────────────────
-  class PeriodMemory extends MemFileBase {
-    static schemaVersion = 1
-    static dir() { return periodBaseDir() }
-    static async load(path) { return super.load(path) }
-  }
-
-  // ── 必要记忆（per-session，随总览注入）──────────────────────────────
-  class NecessaryMemory extends MemFileBase {
-    static schemaVersion = 1
-    static dir() { return necessaryDir() }
-    static path(sid) { return p(this.dir(), String(sid || '') + '.json') }
-    static async load(sid) { return super.load(this.path(sid)) }
-    static async save(sid, content) {
-      const path = this.path(sid)
-      const obj = (await readJson(path)) || { sessionId: sid }
-      obj.sessionId = sid
-      obj.content = content
-      obj.updatedAt = nowIso()
-      obj.history = obj.history || []
-      obj.history.push(histEntry('necessary', { agent: sid, session: sid, turn: 0, note: '必要记忆写入' }))
-      await writeJson(path, obj)
-      return obj
-    }
-  }
-
-  // ── 无模型记忆整理区 ────────────────────────────────────────────────
-  class NoModelMemory extends MemFileBase {
-    static schemaVersion = 1
-    static dir() { return noModelDir() }
-    static path(sid) { return p(this.dir(), sanitizeFile(sid) + '.json') }
-    static async load(sid) { return super.load(this.path(sid)) }
-  }
-
-  // ── 隔离事件 ─────────────────────────────────────────────────────────
-  class IncidentMemory extends MemFileBase {
-    static schemaVersion = 1
-    static dir() { return isolationDir() }
-    static path(id) { return p(this.dir(), id, 'incident.json') }
-    static async load(id) { return super.load(this.path(id)) }
-    static async save(inc) { await writeJson(this.path(inc.id), inc); return inc }
-  }
-
-  // ── 智能体活跃（v4：custom + keywords + works[]，每会话一段）─────────
-  class ActiveMemory extends MemFileBase {
-    static schemaVersion = 4
-    static dir() { return activeDir() }
-    static path(ownerKey) {
-      const key = String(ownerKey || '').trim() || 'default'
-      const safe = key.replace(/[\\/:*?"<>|]/g, '_')
-      return p(this.dir(), safe + '.json')
-    }
-    static blank(ownerKey) {
-      return { schemaVersion: 4, agent: String(ownerKey || ''), custom: '', keywords: [], works: [], refs: [], history: [], updatedAt: '' }
-    }
-    // 读取：缺失给空白 v4；旧版本（v2/v3/无版本）→ migrate 到 v4 并写回
-    static async load(ownerKey) {
-      const path = this.path(ownerKey)
-      const o = await readJson(path)
-      if (o && !isTombstone(o)) {
-        if (o.schemaVersion === 4) return { obj: o, path }
-        const migrated = this.migrate(o, ownerKey)
-        if (migrated) {
-          migrated.updatedAt = nowIso()
-          migrated._migratedFrom = o.schemaVersion || 0
-          migrated._migratedAt = nowIso()
-          await writeJson(path, migrated)
-          console.log('[motion-memory] ActiveMemory 迁移: ' + relOf(path) + ' v' + (o.schemaVersion || '?') + ' → v4')
-        }
-        return { obj: migrated || this.blank(ownerKey), path }
-      }
-      return { obj: this.blank(ownerKey), path }
-    }
-    // v3 → v4：summary+records[] → custom+keywords[]+works[]
-    //  - summary 丢弃（由 works[0].text 派生）
-    //  - records[] → works[]（key 里提取 sid；text/refs/at 保留）
-    //  - refs[] kind=keyword → keywords[]
-    //  - history[] 原样保留（git 式）
-    static migrate(o, ownerKey) {
-      if (!o || typeof o !== 'object') return null
-      const out = this.blank(ownerKey || o.agent || '')
-      out.refs = Array.isArray(o.refs) ? o.refs.slice() : []
-      out.history = Array.isArray(o.history) ? o.history.slice() : []
-      // records → works：key='session:<sid>' 或兜底顺序号
-      const works = []
-      const recs = Array.isArray(o.records) ? o.records : []
-      for (const r of recs) {
-        if (!r || !r.text) continue
-        let sid = ''
-        const k = String(r.key || '')
-        const km = k.match(/^session:(.+)$/)
-        if (km) sid = km[1]
-        else if (r.sid) sid = String(r.sid)
-        works.push({ sid: sid || ('w' + (works.length + 1)), text: String(r.text), refs: Array.isArray(r.refs) ? r.refs.slice() : [], updatedAt: r.updatedAt || r.at || '' })
-      }
-      // summary 兜底：若 works 为空且 summary 存在，作为一条工作记录
-      if (!works.length && o.summary) {
-        works.push({ sid: 'summary', text: String(o.summary).slice(0, 200), refs: [], updatedAt: '' })
-      }
-      out.works = works
-      // refs → keywords：kind=keyword 的 title
-      const kw = new Set()
-      for (const r of out.refs) { if (r && r.kind === 'keyword' && r.title) kw.add(String(r.title)) }
-      out.keywords = [...kw]
-      return out
-    }
-    // 全量扫描迁移（启动时兜底）：当前活跃/ 下所有非 v4 文件 → v4
-    static async migrateAll() {
-      const report = { total: 0, migrated: 0, failed: 0, items: [] }
-      const files = await listFiles(this.dir(), false)
-      for (const f of files) {
-        if (f.name === 'active.json' || !f.name.endsWith('.json')) continue
-        const o = await readJson(f.path)
-        if (!o || isTombstone(o) || o.schemaVersion === 4) continue
-        report.total++
-        const ownerKey = o.agent || f.name.replace(/\.json$/, '')
-        try {
-          await this.load(ownerKey)
-          report.migrated++
-          report.items.push(f.name + ': v' + (o.schemaVersion || '?') + ' → v4')
-        } catch (e) { report.failed++; report.items.push(f.name + ': 失败 ' + (e && e.message)) }
-      }
-      return report
-    }
-  }
-
-  MemFiles.keyword = KeywordMemory
-  MemFiles.event = EventMemory
-  MemFiles.period = PeriodMemory
-  MemFiles.active = ActiveMemory
-  MemFiles.necessary = NecessaryMemory
-  MemFiles.noModel = NoModelMemory
-  MemFiles.incident = IncidentMemory
 
   // ── 智能体归属：谁创造的记忆归谁；管理员 memory-admin 产物对全体共享 ─────
   function ownerOf(obj) {
@@ -774,143 +591,15 @@ export function apply(ctx) {
   // 本实现：① 会话级缓存（mtime+size 失效）② 增量解压新增帧（而非每次全量解压）
   // （ZSTD_MAGIC/encodeSegment/projectKeyOf/sessionLogsRoot/scanZstdFrames 已拆至
   //   ../motion-memory-modules/session-log.js）
-  // 推导会话日志路径（可用 cwd 或 fallback 扫描 sessions 根目录找 <sid>）
-  function sessionLogPathOf(sid, cwd) {
-    return sessionLogPathOfMod(sid, cwd, p)
-  }
-  // 帧级增量读取会话日志：返回 { events, header }；失败返回 null（调用方 fallback 到 sessionQuery）
-  function readSessionLogFrames(sid, cwd) {
-    const path = sessionLogPathOf(sid, cwd)
-    if (!path) return null
-    let st
-    try { st = statSync(path) } catch (e) { return null }
-    const cached = state.sessionLogCache.get(sid)
-    // 缓存命中且文件未变 → 直接返回（②-A）
-    if (cached && cached.path === path && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
-      return { events: cached.events, header: cached.header }
-    }
-    // 读文件 + 帧扫描
-    let buf
-    try { buf = readFileSync(path) } catch (e) { return null }
-    let frames
-    try { frames = scanZstdFrames(buf).frames } catch (e) { return null }
-    if (!frames.length) return null
-    // 增量：同路径且仅变大时，只解压新增帧；否则全量
-    const startFrame = (cached && cached.path === path && cached.size < st.size && cached.frameCount > 0)
-      ? cached.frameCount : 0
-    const events = startFrame > 0 ? cached.events.slice() : []
-    let header = startFrame > 0 ? cached.header : null
-    const parsed = []
-    for (let i = startFrame; i < frames.length; i++) {
-      let plain
-      try {
-        plain = zstdDecompressSync(buf.subarray(frames[i].start, frames[i].end)).toString('utf8')
-      } catch (e) { continue }
-      for (const line of plain.split('\n')) {
-        const t = line.trim()
-        if (!t) continue
-        try {
-          const o = JSON.parse(t)
-          if (o && o.type === 'session' && !header) { header = o; continue }
-          if (o && typeof o === 'object') parsed.push(o)
-        } catch (e) {}
-      }
-    }
-    events.push(...parsed)
-    const entry = { path, events, header, size: st.size, mtimeMs: st.mtimeMs, frameCount: frames.length }
-    state.sessionLogCache.set(sid, entry)
-    return { events: entry.events, header: entry.header }
-  }
-  async function readSessionEvents(sid) {
-    // 快速路径：帧级读取（缓存 + 增量解压）
-    const fast = readSessionLogFrames(sid)
-    if (fast && fast.events && fast.events.length) return fast.events
-    // fallback：sessionQuery 服务（live 会话最新事件可能未落盘）
-    const sq = ctx.get('sessionQuery')
-    if (!sq) return []
-    try {
-      const snap = await sq.readSession(sid)
-      return (snap && snap.events) || []
-    } catch (e) { return [] }
-  }
-  // 限帧读取：只解前 maxFrames 帧（agent-preset/selected 等早期事件定位用，
-  // 避免为找 1 个事件全量解压大日志；不写 sessionLogCache，不污染全量缓存）
-  function readSessionEventsFirstFrames(sid, maxFrames) {
-    try {
-      const path = sessionLogPathOf(sid, '')
-      if (!path) return []
-      const st = statSync(path)
-      if (!st.isFile()) return []
-      const buf = readFileSync(path)
-      const frames = scanZstdFrames(buf).frames
-      if (!frames.length) return []
-      const out = []
-      for (let i = 0; i < Math.min(frames.length, Math.max(1, Number(maxFrames) || 30)); i++) {
-        let plain
-        try { plain = zstdDecompressSync(buf.subarray(frames[i].start, frames[i].end)).toString('utf8') } catch (e) { continue }
-        for (const line of plain.split('\n')) {
-          const t = line.trim()
-          if (!t) continue
-          try {
-            const o = JSON.parse(t)
-            if (o && typeof o === 'object' && o.type) out.push(o)
-          } catch (e) {}
-        }
-      }
-      return out
-    } catch (e) { return [] }
-  }
-  // 轻量读会话标题：只解前 20 帧找 session/title 事件，取最后一条 data.title（供设置界面会话列表使用）
-  function readSessionTitleFromLog(sid) {
-    try {
-      const path = sessionLogPathOf(sid, '')
-      if (!path) return ''
-      const st = statSync(path)
-      if (!st.isFile()) return ''
-      const buf = readFileSync(path)
-      const frames = scanZstdFrames(buf).frames
-      if (!frames.length) return ''
-      let title = ''
-      // 先解前 20 帧（快路径）；读不到标题再扫全文件（标题帧可能出现在较后的位置）
-      const scan = (start, end) => {
-        for (let i = start; i < end; i++) {
-          let plain
-          try { plain = zstdDecompressSync(buf.subarray(frames[i].start, frames[i].end)).toString('utf8') } catch (e) { continue }
-          for (const line of plain.split('\n')) {
-            const t = line.trim()
-            if (!t) continue
-            try {
-              const o = JSON.parse(t)
-              if (o && o.type === 'session/title' && o.data && typeof o.data.title === 'string' && o.data.title.trim()) {
-                title = String(o.data.title).trim()
-              }
-            } catch (e) {}
-          }
-        }
-      }
-      scan(0, Math.min(frames.length, 20))
-      if (!title && frames.length > 20) scan(20, frames.length)
-      return title
-    } catch (e) { return '' }
-  }
-  // 会话日志相对指向（① 引用增强）：工作区 slug + 日志相对路径（相对 DSH_HOME），
-  // 供事件记忆溯源时无需 sessionQuery 即可推导会话记录文件位置。
-  function buildSessionRef(sid, turn) {
-    if (!sid) return null
-    let cwd = ''
-    try {
-      const fast = readSessionLogFrames(sid)
-      const h = fast && fast.header
-      if (h && typeof h.cwd === 'string') cwd = h.cwd
-    } catch (e) {}
-    const slug = cwd ? projectKeyOf(cwd) : ''
-    const rel = slug ? 'sessions/' + slug + '/' + encodeSegment(sid) + '/session.jsonl.zstd' : ''
-    return {
-      kind: 'session', sessionId: sid, turn,
-      workspaceSlug: slug || null,
-      logRelPath: rel || null,
-    }
-  }
+  // ── 会话日志帧级读取（②-A 缓存 + ②-B 帧级定位）──────────────────
+  // （已拆至 ../motion-memory-modules/session-log.mjs：createSessionLogReader 工厂，
+  //   注入 { p, state, ctx } 返回 sessionLogPathOf/readSessionLogFrames/readSessionEvents/
+  //   readSessionEventsFirstFrames/readSessionTitleFromLog/buildSessionRef）
+  const {
+    sessionLogPathOf, readSessionLogFrames, readSessionEvents,
+    readSessionEventsFirstFrames, readSessionTitleFromLog, buildSessionRef,
+  } = createSessionLogReader({ p, state, ctx })
+
   // 超长文本中部省略：已拆至 ../motion-memory-modules/event-text.mjs（trimTextMiddle，顶层 import 同名引入）
   function trimCap(cap) {
     return Math.min(Math.max(1, Number(cfg().readTrimChars) || 500), Math.max(1, Math.floor(Number(cap) / 2)))

@@ -2,11 +2,13 @@
  * motion-memory 会话日志帧级读取模块（拆分自 motion-memory.js）
  *
  * 纯函数层：会话日志路径推导 + zstd 帧扫描。
- * 依赖：node:fs（statSync/readdirSync）、process.env.DSH_HOME。
+ * 状态化层（B 档）：帧级增量读取、事件读取、限帧读取、标题读取、会话引用构造。
+ * 依赖：node:fs、node:zlib、process.env.DSH_HOME。
  * 由 motion-memory.js 通过 import 引入（Cordis loader 支持相对路径）。
  */
 
-import { statSync, readdirSync } from 'node:fs'
+import { statSync, readdirSync, readFileSync } from 'node:fs'
+import { zstdDecompressSync } from 'node:zlib'
 
 export const ZSTD_MAGIC = 0xFD2FB528
 
@@ -116,3 +118,155 @@ export function sessionLogPathOf(sid, cwd, joinPath) {
   } catch (e) {}
   return ''
 }
+/**
+ * 会话日志状态化读取工厂（B 档拆分）：帧级增量读取、事件读取、限帧读取、
+ * 标题读取、会话引用构造。依赖（deps）由 motion-memory.js 注入：
+ *   { p, state, ctx }（state.sessionLogCache 缓存；ctx.get('sessionQuery') 兜底）
+ * @param {object} deps 注入依赖
+ */
+export function createSessionLogReader(deps) {
+  const { p, state, ctx } = deps
+  // 推导会话日志路径：包装模块顶层 sessionLogPathOf(sid, cwd, joinPath)，
+  // joinPath 固定注入为 p()（拼接路径并归一化反斜杠）
+  function resolveLogPath(sid, cwd) {
+    return sessionLogPathOf(sid, cwd, p)
+  }
+
+  // 帧级增量读取会话日志：返回 { events, header }；失败返回 null（调用方 fallback 到 sessionQuery）
+  function readSessionLogFrames(sid, cwd) {
+    const path = resolveLogPath(sid, cwd)
+    if (!path) return null
+    let st
+    try { st = statSync(path) } catch (e) { return null }
+    const cached = state.sessionLogCache.get(sid)
+    // 缓存命中且文件未变 → 直接返回（②-A）
+    if (cached && cached.path === path && cached.size === st.size && cached.mtimeMs === st.mtimeMs) {
+      return { events: cached.events, header: cached.header }
+    }
+    // 读文件 + 帧扫描
+    let buf
+    try { buf = readFileSync(path) } catch (e) { return null }
+    let frames
+    try { frames = scanZstdFrames(buf).frames } catch (e) { return null }
+    if (!frames.length) return null
+    // 增量：同路径且仅变大时，只解压新增帧；否则全量
+    const startFrame = (cached && cached.path === path && cached.size < st.size && cached.frameCount > 0)
+      ? cached.frameCount : 0
+    const events = startFrame > 0 ? cached.events.slice() : []
+    let header = startFrame > 0 ? cached.header : null
+    const parsed = []
+    for (let i = startFrame; i < frames.length; i++) {
+      let plain
+      try {
+        plain = zstdDecompressSync(buf.subarray(frames[i].start, frames[i].end)).toString('utf8')
+      } catch (e) { continue }
+      for (const line of plain.split('\n')) {
+        const t = line.trim()
+        if (!t) continue
+        try {
+          const o = JSON.parse(t)
+          if (o && o.type === 'session' && !header) { header = o; continue }
+          if (o && typeof o === 'object') parsed.push(o)
+        } catch (e) {}
+      }
+    }
+    events.push(...parsed)
+    const entry = { path, events, header, size: st.size, mtimeMs: st.mtimeMs, frameCount: frames.length }
+    state.sessionLogCache.set(sid, entry)
+    return { events: entry.events, header: entry.header }
+  }
+  async function readSessionEvents(sid) {
+    // 快速路径：帧级读取（缓存 + 增量解压）
+    const fast = readSessionLogFrames(sid)
+    if (fast && fast.events && fast.events.length) return fast.events
+    // fallback：sessionQuery 服务（live 会话最新事件可能未落盘）
+    const sq = ctx.get('sessionQuery')
+    if (!sq) return []
+    try {
+      const snap = await sq.readSession(sid)
+      return (snap && snap.events) || []
+    } catch (e) { return [] }
+  }
+  // 限帧读取：只解前 maxFrames 帧（agent-preset/selected 等早期事件定位用，
+  // 避免为找 1 个事件全量解压大日志；不写 sessionLogCache，不污染全量缓存）
+  function readSessionEventsFirstFrames(sid, maxFrames) {
+    try {
+      const path = resolveLogPath(sid, '')
+      if (!path) return []
+      const st = statSync(path)
+      if (!st.isFile()) return []
+      const buf = readFileSync(path)
+      const frames = scanZstdFrames(buf).frames
+      if (!frames.length) return []
+      const out = []
+      for (let i = 0; i < Math.min(frames.length, Math.max(1, Number(maxFrames) || 30)); i++) {
+        let plain
+        try { plain = zstdDecompressSync(buf.subarray(frames[i].start, frames[i].end)).toString('utf8') } catch (e) { continue }
+        for (const line of plain.split('\n')) {
+          const t = line.trim()
+          if (!t) continue
+          try {
+            const o = JSON.parse(t)
+            if (o && typeof o === 'object' && o.type) out.push(o)
+          } catch (e) {}
+        }
+      }
+      return out
+    } catch (e) { return [] }
+  }
+  // 轻量读会话标题：只解前 20 帧找 session/title 事件，取最后一条 data.title（供设置界面会话列表使用）
+  function readSessionTitleFromLog(sid) {
+    try {
+      const path = resolveLogPath(sid, '')
+      if (!path) return ''
+      const st = statSync(path)
+      if (!st.isFile()) return ''
+      const buf = readFileSync(path)
+      const frames = scanZstdFrames(buf).frames
+      if (!frames.length) return ''
+      let title = ''
+      // 先解前 20 帧（快路径）；读不到标题再扫全文件（标题帧可能出现在较后的位置）
+      const scan = (start, end) => {
+        for (let i = start; i < end; i++) {
+          let plain
+          try { plain = zstdDecompressSync(buf.subarray(frames[i].start, frames[i].end)).toString('utf8') } catch (e) { continue }
+          for (const line of plain.split('\n')) {
+            const t = line.trim()
+            if (!t) continue
+            try {
+              const o = JSON.parse(t)
+              if (o && o.type === 'session/title' && o.data && typeof o.data.title === 'string' && o.data.title.trim()) {
+                title = String(o.data.title).trim()
+              }
+            } catch (e) {}
+          }
+        }
+      }
+      scan(0, Math.min(frames.length, 20))
+      if (!title && frames.length > 20) scan(20, frames.length)
+      return title
+    } catch (e) { return '' }
+  }
+  // 会话日志相对指向（① 引用增强）：工作区 slug + 日志相对路径（相对 DSH_HOME），
+  // 供事件记忆溯源时无需 sessionQuery 即可推导会话记录文件位置。
+  function buildSessionRef(sid, turn) {
+    if (!sid) return null
+    let cwd = ''
+    try {
+      const fast = readSessionLogFrames(sid)
+      const h = fast && fast.header
+      if (h && typeof h.cwd === 'string') cwd = h.cwd
+    } catch (e) {}
+    const slug = cwd ? projectKeyOf(cwd) : ''
+    const rel = slug ? 'sessions/' + slug + '/' + encodeSegment(sid) + '/session.jsonl.zstd' : ''
+    return {
+      kind: 'session', sessionId: sid, turn,
+      workspaceSlug: slug || null,
+      logRelPath: rel || null,
+    }
+  }
+  return { sessionLogPathOf: resolveLogPath, readSessionLogFrames, readSessionEvents, readSessionEventsFirstFrames, readSessionTitleFromLog, buildSessionRef }
+}
+
+// B 档别名：createSessionLogReader 内部引用（模块顶层三参数版）
+export { sessionLogPathOf as sessionLogPathOfMod }
