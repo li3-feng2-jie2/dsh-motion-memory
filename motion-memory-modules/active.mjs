@@ -13,6 +13,7 @@ export function createActive(core, deps) {
     state, ctx, p, root, relOf, nowIso, parseIso, uid,
     readJson, writeJson, listFiles, isTombstone, tombstone, uniquePath, fileNameOf,
     histEntry, sanitizeFile, cfg, adminCfg, activeDir, dailyBaseDir, importantDir, archiveBaseDir,
+    periodBaseDir,
   } = core
   const { readTurnUserText } = deps || {}
 
@@ -249,19 +250,43 @@ export function createActive(core, deps) {
     return { ok: true, text: '活跃记忆已更新', obj: act }
   }
   async function refreshActiveIndex() {
+    // 完整聚合（重构后曾退化为仅 agents）：refs（各活跃文件+works 段指针）/ recentPeriods / agents+summary
     const list = await listFiles(activeDir(), false)
-    const idx = { updatedAt: nowIso(), agents: [] }
-    const seen = new Set()
+    const idx = { updatedAt: nowIso(), refs: [], recentPeriods: [], agents: [] }
+    const seenAgent = new Set()
+    const seenRef = new Set()
     for (const f of list) {
       if (f.name === 'active.json') continue
       const o = await readJson(f.path)
       if (!o || isTombstone(o)) continue
       const agent = String(o.agent || f.name.replace(/\.json$/, '') || '').trim()
-      if (!agent || seen.has(agent)) continue
-      seen.add(agent)
-      idx.agents.push({ agent, updatedAt: o.updatedAt || '' })
+      if (agent && !seenAgent.has(agent)) {
+        seenAgent.add(agent)
+        idx.agents.push({ agent, updatedAt: o.updatedAt || '', summary: String(o.summary || '').slice(0, 120) })
+      }
+      // 顶层 refs + 各 works 段 refs 一并聚合（去重）
+      const refs = Array.isArray(o.refs) ? o.refs : []
+      if (Array.isArray(o.works)) for (const w of o.works) if (w && Array.isArray(w.refs)) refs.push(...w.refs)
+      for (const r of refs) {
+        if (!r || !r.title) continue
+        const key = (r.kind || '') + '|' + r.title
+        if (seenRef.has(key)) continue
+        seenRef.add(key)
+        idx.refs.push({ kind: r.kind || 'keyword', title: r.title, ref: r.ref || r.title })
+      }
     }
     idx.agents.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+    // 最近周期：周期记忆目录最新若干文件（recentPeriods = rel 列表）
+    try {
+      const periods = (await listFiles(periodBaseDir(), true)).map(f => relOf(f.path))
+      periods.sort((a, b) => b.localeCompare(a))
+      idx.recentPeriods = periods.slice(0, 10)
+    } catch (e) { idx.recentPeriods = [] }
+    // refs 总量上限（indexScore.maxRefs 防膨胀）
+    try {
+      const maxRefs = Math.max(20, Number((cfg() && cfg().indexScore && cfg().indexScore.maxRefs) || 50))
+      idx.refs = idx.refs.slice(0, maxRefs)
+    } catch (e) {}
     await writeJson(activeIndexPath(), idx)
     return idx
   }
