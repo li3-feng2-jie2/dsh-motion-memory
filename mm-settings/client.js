@@ -2157,7 +2157,6 @@ function MemoryView(props) {
       ),
       React.createElement('div', { style: mmEmpty }, '最近动作：' + (activeV.lastAction || '（无）') + ' · 更新于 ' + (activeV.updatedAt || '') + (activeV.migrated ? ' · 已从旧版迁移' : '')),
       (activeV.migrateReport && activeV.migrateReport.items && activeV.migrateReport.items.length) ? React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-state-warn-primary)', whiteSpace: 'pre-wrap' } }, '迁移报告：' + activeV.migrateReport.items.join('；')) : null,
-      (activeV.refs || []).length ? React.createElement('div', { style: mmEmpty }, '引用 ' + activeV.refs.length + ' 条（', mdText(activeV.refs.slice(0, 10).map(function (r) { return '[' + (r.title || r.ref || '') + '](记忆累积/重要/' + String(r.title || r.ref || '').replace(/[\\/:*?"<>|]/g, '_') + '.json)' }).join('、')), '）') : null,
     )
   }
   // 周期页：内容可编辑 + 重审（用户选改后提示模型重总结）；按钮靠右换行
