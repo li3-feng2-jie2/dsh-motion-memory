@@ -1865,24 +1865,26 @@ export function apply(ctx) {
       const items = []
       const trackMetaMap = {}
       try {
-        // 枚举 记忆累积/YYYY/MM/ 两级目录（只列目录，不递归文件树）
+        // 枚举 记忆累积/YYYY/MM/ 两级目录：fs.listDir 直接列目录项（type=directory），
+        // 绝不递归全扫文件树。聚合文件约定 记忆累积/YYYY/MM/session-<sid>.json。
         const base = dailyBaseDir()
-        const years = await listFiles(base, false)
-        for (const y of years) {
-          if (!y.name || !/^\d{4}$/.test(y.name)) continue
-          const months = await listFiles(p(base, y.name), false)
-          for (const m of months) {
-            if (!m.name || !/^\d{2}$/.test(m.name)) continue
+        const yearEntries = await fs.listDir(base)
+        for (const y of yearEntries) {
+          if (!y || y.type !== 'directory' || !/^\d{4}$/.test(y.name)) continue
+          const monthEntries = await fs.listDir(p(base, y.name))
+          for (const m of monthEntries) {
+            if (!m || m.type !== 'directory' || !/^\d{2}$/.test(m.name)) continue
             const monthDir = p(base, y.name, m.name)
-            const files = await listFiles(monthDir, false)
-            for (const f of files) {
-              if (!f.name.endsWith('.json')) continue
+            const fileEntries = await fs.listDir(monthDir)
+            for (const fe of fileEntries) {
+              if (!fe || fe.type !== 'file' || !fe.name.endsWith('.json')) continue
               // 指定 sid：只取该会话聚合文件；全部会话：只取 session- 聚合文件（散事件/周期/补充不在此层）
-              if (sid) { if (f.name !== safeSid + '.json') continue }
-              else if (f.name.indexOf('session-') !== 0) continue
-              const o = await readJson(f.path)
+              if (sid) { if (fe.name !== safeSid + '.json') continue }
+              else if (fe.name.indexOf('session-') !== 0) continue
+              const fPath = p(monthDir, fe.name)
+              const o = await readJson(fPath)
               if (!o || isTombstone(o) || o.kind !== 'event') continue
-              const fileSid = (o.sessionRef && o.sessionRef.sessionId) ? o.sessionRef.sessionId : (sid || f.name.replace(/^session-/, '').replace(/\.json$/, ''))
+              const fileSid = (o.sessionRef && o.sessionRef.sessionId) ? o.sessionRef.sessionId : (sid || fe.name.replace(/^session-/, '').replace(/\.json$/, ''))
               if (sid && fileSid !== sid) continue
               if (fileSid && Array.isArray(o.trackMeta) && o.trackMeta.length) {
                 const tm = o.trackMeta[o.trackMeta.length - 1]
