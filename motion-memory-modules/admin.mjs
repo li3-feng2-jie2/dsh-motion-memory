@@ -21,9 +21,11 @@ export function createAdmin(core, deps) {
   } = core
   const {
     autoLink, withActiveParents, buildSessionRef, touchActive, activeIndexPath,
-    hasTrackSummary, trackCfg, runTurnSummaryTask,
     readStepRange, stepsToText,
   } = deps || {}
+  // track 溢出重建函数后置注入（C 档：track 域拆出后经 setTrackFns 提供，避免工厂创建期循环依赖）
+  let trackFns = null
+  function setTrackFns(fns) { trackFns = fns }
 
   // ═════════════════════════════════════════════════════════════════════
   // 阶段0：记忆管理员 — token 估算 / prompt / LLM 调用 / 分块压缩引擎 / 查看
@@ -184,6 +186,7 @@ export function createAdmin(core, deps) {
   }
   // 各类型溢出任务重建：返回可执行任务函数；无法重建（幂等已满足等）返回 null
   async function rebuildSpilledTask(type, o) {
+    const { hasTrackSummary, trackCfg, runTurnSummaryTask } = trackFns || {}
     if (type === 'track') {
       const sid = o.sid, turn = Number(o.turn) || 0
       if (!sid || !turn) return null
@@ -800,5 +803,6 @@ function parseAdminJson(text) {
     adminCfg, resolveModelConfig, adminHasModel, scheduleWork, sweepSpilledQueues,
     adminContextText, activeRecordsContextText, adminLlm, parseAdminJson,
     summarizeChunk, chunkCompress, memCmdAdminView, memCmdAdminSummarize,
+    setTrackFns,
   }
 }
