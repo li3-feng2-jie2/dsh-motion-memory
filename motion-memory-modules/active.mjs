@@ -12,9 +12,9 @@ export function createActive(core, deps) {
   const {
     state, ctx, p, root, relOf, nowIso, parseIso, uid,
     readJson, writeJson, listFiles, isTombstone, tombstone, uniquePath, fileNameOf,
-    histEntry, sanitizeFile, cfg, activeDir, dailyBaseDir, importantDir, archiveBaseDir,
+    histEntry, sanitizeFile, cfg, adminCfg, activeDir, dailyBaseDir, importantDir, archiveBaseDir,
   } = core
-  const { readTurnUserText, adminCfg } = deps || {}
+  const { readTurnUserText } = deps || {}
 
   function activeIndexPath() { return p(activeDir(), 'active.json') }
   function activeKeyOf(ownerKey, sid) { return (ownerKey || '') + '@' + sid }

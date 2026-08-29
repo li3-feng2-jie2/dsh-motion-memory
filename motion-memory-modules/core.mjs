@@ -603,6 +603,12 @@ export function createCore(ctx) {
     }
   }
   function cfg() { return state.config || defaultConfig(baseWs()) }
+  // admin 子配置读取（C 档：admin 域拆出后归 core——纯配置读取，供各域工厂与主文件共用）
+  function adminCfg() {
+    const c = cfg()
+    if (!c.admin) c.admin = {}
+    return c.admin
+  }
 
   // ── 插件目录（供 isUnderPluginDir 前向引用；非 git 安装也适用）──────────
   function pluginGitDir() {
@@ -663,7 +669,7 @@ export function createCore(ctx) {
     scanDir, findInDir, findImportant, findArchive, findKeyword, titleWords,
     findSimilarTitles, searchTitles, lastOpTime, lastOp, isoStr, uniquePath, pageSlice,
     // 配置
-    defaultConfig, cfg, pluginGitDir, pluginDir,
+    defaultConfig, cfg, adminCfg, pluginGitDir, pluginDir,
     // 依赖注入（由 apply 组装时调用）
     setReaderFirstFrames, setMemFiles,
   }
