@@ -1870,15 +1870,18 @@ export function apply(ctx) {
       try {
         // 枚举 记忆累积/YYYY/MM/ 两级目录：fs.listDir 直接列目录项（type=directory），
         // 绝不递归全扫文件树。聚合文件约定 记忆累积/YYYY/MM/session-<sid>.json。
+        // 注意：ctx.fs.listDir 需要 resolve 后的目标对象（字符串路径会抛错被吞 → 查询全空）
         const base = dailyBaseDir()
-        const yearEntries = await fs.listDir(base)
+        const baseTarget = await fs.resolve(base).catch(() => null)
+        if (!baseTarget) return { ok: false, text: '记忆累积目录不可用', items: [] }
+        const yearEntries = await fs.listDir(baseTarget)
         for (const y of yearEntries) {
           if (!y || y.type !== 'directory' || !/^\d{4}$/.test(y.name)) continue
-          const monthEntries = await fs.listDir(p(base, y.name))
+          const monthEntries = await fs.listDir(await fs.resolve(p(base, y.name)))
           for (const m of monthEntries) {
             if (!m || m.type !== 'directory' || !/^\d{2}$/.test(m.name)) continue
             const monthDir = p(base, y.name, m.name)
-            const fileEntries = await fs.listDir(monthDir)
+            const fileEntries = await fs.listDir(await fs.resolve(monthDir))
             for (const fe of fileEntries) {
               if (!fe || fe.type !== 'file' || !fe.name.endsWith('.json')) continue
               // 指定 sid：只取该会话聚合文件；全部会话：只取 session- 聚合文件（散事件/周期/补充不在此层）
