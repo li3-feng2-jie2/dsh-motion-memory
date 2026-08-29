@@ -143,6 +143,8 @@ export function createCore(ctx) {
   // v3：补充区年/月两级（补充/YYYY/MM）
   function archiveDirFor(d) { const q = parts(d || new Date()); return p(archiveBaseDir(), q.y, q.m) }
   function dailyBaseDir() { return p(root(), '记忆累积') }
+  // 周期记忆目录（C 档：period 域拆出后归 core——纯路径函数，mem-files 与 period 域共用）
+  function periodBaseDir() { return p(dailyBaseDir(), '周期记忆') }
   function activeDir() { return p(root(), '当前活跃') }
   // 无模型记忆整理区：无模型降级生成的工作摘要落盘处（可被扫描检索）
   function noModelDir() { return p(root(), '记忆累积', '无模型记忆整理') }
@@ -655,6 +657,7 @@ export function createCore(ctx) {
     configPath, readConfigFile, writeConfigFile, legacyConfigPaths, readJsonFileNative,
     parseRemoteJson, memoryFileCount, globalDefaultRoot,
     necessaryDir, importantDir, archiveBaseDir, archiveDirFor, dailyBaseDir, activeDir,
+    periodBaseDir,
     noModelDir, isolationDir, quarantineDir, queryLogPath,
     // 会话工作区
     setSessionCwd, sessionCwdOf, cwdOf, sessionPolicy,

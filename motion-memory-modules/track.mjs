@@ -774,7 +774,7 @@ export function createTrack(core, deps) {
   }
 
   return {
-    trackCfg, hasTrackSummary, runTurnSummary, runTurnSummaryTask,
+    trackCfg, hasTrackSummary, runTurnSummary, runTurnSummaryTask, applyEconomize,
     appendTurnToAggregate, mergeScatteredTurnEvents, lazyArchive, memCmdTrackRun,
   }
 }
