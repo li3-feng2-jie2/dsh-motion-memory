@@ -189,10 +189,7 @@ export function createMemFiles(deps) {
         works.push({ sid: 'summary', text: String(o.summary).slice(0, 200), refs: [], updatedAt: '' })
       }
       out.works = works
-      // refs → keywords：kind=keyword 的 title
-      const kw = new Set()
-      for (const r of out.refs) { if (r && r.kind === 'keyword' && r.title) kw.add(String(r.title)) }
-      out.keywords = [...kw]
+      // v7：不再派生 keywords（只用 refs 引用指向）
       return out
     }
     // 全量扫描迁移（启动时兜底）：当前活跃/ 下所有非 v4 文件 → v4

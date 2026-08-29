@@ -704,7 +704,11 @@ export function apply(ctx) {
     try {
       const act = await readAgentActive(ownerKey || sid || '')
       if (act && act.obj) {
-        if (Array.isArray(act.obj.keywords)) keywords = act.obj.keywords.slice(0, 50)  // 指针全量（安全上限 50，维护规则控制实际数量）
+        if (Array.isArray(act.obj.refs) && act.obj.refs.length) {
+          // v7：关键词从 refs 派生（引用指向即主题索引），不再单独维护 keywords 短词
+          const seen = new Set()
+          keywords = act.obj.refs.map(r => r && r.title).filter(t => { if (!t || seen.has(t)) return false; seen.add(t); return true }).slice(0, 50)
+        }
         // 空白工作段检测：程序已建段但尚无内容（模型总结失败/无模型待转正）→ 提醒需要总结
         if (Array.isArray(act.obj.works)) {
           blankWorks = act.obj.works
@@ -1769,7 +1773,19 @@ export function apply(ctx) {
           session: (args && args.session) || state.lastSid || '',
           summary: works.length ? String(works[0].text || '').slice(0, 120) : '',
           custom: obj.custom || '',
-          keywords: (Array.isArray(obj.keywords) ? obj.keywords.slice(0, 50) : []).map(k => ({ word: String(k), exists: existsSync(p(importantDir(), sanitizeFile(String(k)) + '.json')) })),
+          keywords: (function () {
+            // v7：关键词区数据源 = refs（引用指向即主题索引）
+            const seen = {}
+            const out = []
+            for (const r of (Array.isArray(obj.refs) ? obj.refs : [])) {
+              const w = r && r.title
+              if (!w || seen[w]) continue
+              seen[w] = true
+              out.push({ word: String(w), exists: existsSync(p(importantDir(), sanitizeFile(String(w)) + '.json')) })
+              if (out.length >= 50) break
+            }
+            return out
+          })(),
           works: works.slice(0, 30).map(w => ({ sid: w.sid || '', text: String(w.text || ''), refs: Array.isArray(w.refs) ? w.refs : [], updatedAt: w.updatedAt || '' })),
           lastMemRef: obj.lastMemRef || '', lastAction: obj.lastAction || '', updatedAt: obj.updatedAt || '',
           refs: (obj.refs || []).slice(0, 50),
@@ -1785,7 +1801,23 @@ export function apply(ctx) {
       const ownerKey = (args && args.ownerKey) || (args && args.agent) || ''
       const { obj, path } = await readAgentActive(ownerKey)
       if (args && args.custom !== undefined) obj.custom = String(args.custom)
-      if (args && Array.isArray(args.keywords)) obj.keywords = args.keywords.map(String).slice(0, 100)
+      if (args && Array.isArray(args.keywords)) {
+        // v7：页面关键词区保存 → 同步 refs（只用引用指向）；无文件的词不挂（找不到记忆文件的短词忽略）
+        const wanted = args.keywords.map(String).filter(Boolean)
+        const oldRefs = Array.isArray(obj.refs) ? obj.refs : []
+        const byTitle = {}
+        for (const r of oldRefs) if (r && r.title) byTitle[r.title] = r
+        const nextRefs = []
+        for (const w of wanted) {
+          if (!w) continue
+          if (byTitle[w]) { nextRefs.push(byTitle[w]); continue }
+          try {
+            const f = await findKeyword(w)
+            if (f) nextRefs.push({ title: w, ref: relOf(f.path), kind: f.zone === 'archive' ? 'archive' : 'important', at: nowIso() })
+          } catch (e) {}
+        }
+        obj.refs = nextRefs.slice(-50)
+      }
       if (args && Array.isArray(args.works)) {
         obj.works = args.works.map(w => ({ sid: String(w.sid || ''), text: String(w.text || ''), refs: Array.isArray(w.refs) ? w.refs : [], updatedAt: w.updatedAt || nowIso() }))
       }

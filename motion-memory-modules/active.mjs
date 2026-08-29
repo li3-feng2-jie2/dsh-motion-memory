@@ -197,11 +197,23 @@ export function createActive(core, deps) {
       }
     }
     if (extra && Array.isArray(extra.keywords)) {
-      // 关键词不设数量上限（v6）：维护靠"与近期会话工作相关"规则，去重即可
-      const merged = (Array.isArray(act.keywords) ? act.keywords : []).concat(extra.keywords.map(String))
-      const seen = new Set()
-      const next = merged.filter(k => { const s = String(k || '').trim(); if (!s || seen.has(s)) return false; seen.add(s); return true })
-      if (next.join('|') !== (Array.isArray(act.keywords) ? act.keywords : []).join('|')) { act.keywords = next; recordChanged = true }
+      // v7：挂载只写 refs（引用指向），不再维护 keywords 短词；条目 = {title, kind, ref}（兼容字符串→查位置）
+      act.refs = act.refs || []
+      let refChanged2 = false
+      for (const kw of extra.keywords) {
+        const title = String(typeof kw === 'string' ? kw : (kw && kw.title) || '').trim()
+        if (!title) continue
+        if (act.refs.some(r => r.title === title)) continue
+        let kind = 'important'
+        let ref = title
+        if (typeof kw === 'object' && kw.kind) { kind = String(kw.kind); ref = String(kw.ref || title) }
+        act.refs.push({ title, ref, kind, at: nowIso() })
+        refChanged2 = true
+      }
+      if (refChanged2) {
+        act.refs = act.refs.slice(-50)
+        recordChanged = true
+      }
     }
     if (extra && extra.explicitSummary) {
       const newS = String(extra.explicitSummary).trim().slice(0, 120)

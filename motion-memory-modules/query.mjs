@@ -194,9 +194,14 @@ export function createQuery(core, deps) {
     if (myAct && myAct.obj) {
       const o = myAct.obj
       const segs = ['智能体 ' + myOwnerKey]
-      // v4 三块：custom / keywords / works（每会话一段）
+      // v7：custom + 关键词（refs 派生）+ works
       if (o.custom && String(o.custom).trim()) segs.push('【自定义设定】' + String(o.custom).slice(0, 200))
-      if (Array.isArray(o.keywords) && o.keywords.length) segs.push('【关键词】' + o.keywords.slice(0, 10).join('、'))
+      if (Array.isArray(o.refs) && o.refs.length) {
+        const seen = new Set()
+        const kwTitles = []
+        for (const r of o.refs) { if (r && r.title && !seen.has(r.title)) { seen.add(r.title); kwTitles.push(String(r.title)) } }
+        if (kwTitles.length) segs.push('【关键词】' + kwTitles.slice(0, 10).join('、'))
+      }
       const works = Array.isArray(o.works) ? o.works.slice(0, 3) : []
       if (works.length) segs.push('【会话工作】' + works.map(w => (w.sid ? '[' + String(w.sid).slice(-8) + '] ' : '') + String(w.text || '').slice(0, 100)).join('；'))
       else if (o.summary) segs.push('【会话工作】' + String(o.summary).slice(0, 200))

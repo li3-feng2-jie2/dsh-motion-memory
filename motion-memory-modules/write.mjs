@@ -254,7 +254,7 @@ export function createWrite(core, deps) {
         o.updatedAt = nowIso()
         await writeJson(dst, o)
         await tombstone(found.path, dst)
-        await touchActive(meta, relOf(dst), 'memory_promote', undefined, [title])
+        await touchActive(meta, relOf(dst), 'memory_promote', undefined, [{ title, kind: 'important', ref: relOf(dst) }])
         const n = Math.max(1, Math.round(sc * boost))
         const times = []
         for (let i = 0; i < n; i++) times.push(nowIso())
@@ -267,7 +267,7 @@ export function createWrite(core, deps) {
       found.obj.history.push(histEntry('update', { ...meta, note: '挂回当前活跃' + (args.reason ? '：' + args.reason : '') }))
       found.obj.updatedAt = nowIso()
       await writeJson(found.path, found.obj)
-      await touchActive(meta, relOf(found.path), 'memory_reattach', undefined, [title])
+      await touchActive(meta, relOf(found.path), 'memory_reattach', undefined, [{ title, kind: found.zone === 'archive' ? 'archive' : 'important', ref: relOf(found.path) }])
       const n = Math.max(1, Math.round(sc))
       const times = []
       for (let i = 0; i < n; i++) times.push(nowIso())
@@ -322,7 +322,7 @@ export function createWrite(core, deps) {
     const obj = newKeywordObj(title, String(args.content || ''), args.reason || '', meta, links)
     await writeJson(path, obj)
     await autoLink(obj, meta)
-    await touchActive(meta, relOf(path), 'memory_add', undefined, [title])
+    await touchActive(meta, relOf(path), 'memory_add', undefined, [{ title, kind: 'important', ref: relOf(path) }])
     upsertEmbedding(relOf(path), title, String(args.content || ''), 'important').catch(() => {})  // P0-1：语义索引增量
     return { ok: true, text: '已创建重要记忆：' + title + '（' + relOf(path) + '）' + linkWarnings, data: { title, path: relOf(path) } }
   }
