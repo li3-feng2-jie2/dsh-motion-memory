@@ -1910,7 +1910,7 @@ export function apply(ctx) {
                   const inner = String(s).replace(/^\[[^\]]*\]\(/, '').replace(/\)\s*$/, '')
                   if (/^[^@]+@\d+:step\d+/.test(inner)) { ref = inner; break }
                 }
-                items.push({ path: relOf(f.path), title: (o.title || '') + ' · 轮次 ' + t.turn, content: String(t.content || ''), createdAt: t.at || o.createdAt || '', ref, noModel: !!o.noModel, editHistory: editHist })
+                items.push({ path: relOf(fPath), title: (o.title || '') + ' · 轮次 ' + t.turn, content: String(t.content || ''), createdAt: t.at || o.createdAt || '', ref, noModel: !!o.noModel, editHistory: editHist })
               }
             }
           }
