@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'node:fs'
-import { pad, nowIso, parts, ymPath, parseIso, uid } from './time-utils.mjs'
+import { pad, nowIso, parts, ymPath, parseIso, uid, isEventRel, stamp } from './time-utils.mjs'
 import { histEntry, sanitizeFile } from './memory-objects.mjs'
 import { reconstructAt } from './text-utils.mjs'
 
@@ -652,6 +652,8 @@ export function createCore(ctx) {
   // ── 返回共享对象 ───────────────────────────────────────────────────────
   return {
     ctx, fs, tools, sandboxPolicy, llm, state,
+    // 纯函数共享层（time-utils / memory-objects 直通，供各域工厂解构）
+    nowIso, parseIso, uid, isEventRel, stamp, histEntry, sanitizeFile,
     // paths
     normWs, baseWs, defaultRootFrom, p, relOf, root, dshHome, dshProfile,
     configPath, readConfigFile, writeConfigFile, legacyConfigPaths, readJsonFileNative,

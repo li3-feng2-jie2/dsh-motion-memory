@@ -23,7 +23,7 @@ export function createPeriod(core, deps) {
     state, ctx, p, root, relOf, nowIso, parseIso, uid,
     readJson, writeJson, listFiles, isTombstone, tombstone, cfg, adminCfg,
     importantDir, dailyBaseDir, archiveBaseDir, activeDir, noModelDir,
-    uniquePath, ownerOf, isoStr, readSessionLogFrames, ownerKeyOf, periodBaseDir,
+    uniquePath, ownerOf, isoStr, ownerKeyOf, periodBaseDir,
   } = core
   const {
     scheduleWork, adminLlm, parseAdminJson, resolveModelConfig, adminContextText,
@@ -31,7 +31,7 @@ export function createPeriod(core, deps) {
     runTurnSummary, appendTurnToAggregate, applyEconomize,
     readAgentActive, activeIndexPath, refreshActiveIndex, writeActive, archiveWorksSegment,
     queryDayCount, readStepRange, stepsToText, readTurnUserText, readTurnRef,
-    upsertEmbedding, pushDiff, reloadConfigIfChanged,
+    upsertEmbedding, pushDiff, reloadConfigIfChanged, readSessionLogFrames,
   } = deps || {}
 
   // ═════════════════════════════════════════════════════════════════════

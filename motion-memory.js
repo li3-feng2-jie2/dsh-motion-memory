@@ -175,7 +175,7 @@ export function apply(ctx) {
     runTurnSummary, appendTurnToAggregate, applyEconomize,
     readAgentActive, activeIndexPath, refreshActiveIndex, writeActive, archiveWorksSegment,
     queryDayCount, readStepRange, stepsToText, readTurnUserText, readTurnRef,
-    upsertEmbedding, pushDiff, reloadConfigIfChanged,
+    upsertEmbedding, pushDiff, reloadConfigIfChanged, readSessionLogFrames,
   })
   const {
     periodCfg, runPeriodSummary, sessionTurnsOf, removeNoModelTurnRef,
