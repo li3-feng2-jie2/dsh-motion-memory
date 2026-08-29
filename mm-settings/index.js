@@ -1632,11 +1632,51 @@ export function apply(ctx) {
         // 记忆写操作成功后清空会话列表/轮次列表缓存（下次读取重新扫描）
         if (result && result.ok && ['mm-turn-save', 'mm-keyword-save', 'mm-keyword-del', 'mm-active-save', 'mm-period-save'].indexOf(endpoint) >= 0) {
           state.mmCache = {}
+          broadcastDataChanged({ source: endpoint })
         }
         return { ok: true, value: result }
       } catch (e) {
         return { ok: true, value: { ok: false, text: 'mm-settings 处理失败：' + String((e && e.message) || e) } }
       }
     }, { authority: 'loopback' })
+  }
+
+  // ── 记忆数据变更通知（页面缓存失效）：motion-memory 写盘 → 事件 → 清缓存 + SSE 推页面 ──
+  // 页面（client.js）用 EventSource 订阅 /mmsettings/events，收到 data-changed 后清对应页前端缓存，
+  // 下次切页签/刷新才重新查询——避免"每次切换都 force 全量重查"的卡顿。
+  let dataSubscribers = new Set()
+  function broadcastDataChanged(payload) {
+    state.mmCache = {}
+    const pld = payload || {}
+    for (const send of dataSubscribers) {
+      try { send('data-changed', pld) } catch (e) {}
+    }
+  }
+  ctx.on('motion-memory/data-changed', (payload) => {
+    // 记录文件 mtime 变化会导致指纹缓存失效，但写路径的版本已变化——直接清缓存并推送
+    broadcastDataChanged({ rel: (payload && payload.rel) || '', path: (payload && payload.path) || '' })
+  })
+  const ws = ctx.get('webServer')
+  if (ws && typeof ws.register === 'function') {
+    ctx.effect(() => ws.register({
+      kind: 'exact',
+      path: '/mmsettings/events',
+      handler: (req, res) => {
+        try {
+          res.setHeader('content-type', 'text/event-stream')
+          res.setHeader('cache-control', 'no-cache')
+          res.setHeader('connection', 'keep-alive')
+          res.write('retry: 3000\n\n')
+        } catch (e) {}
+        const send = (event, data) => {
+          try { res.write('event: ' + event + '\ndata: ' + JSON.stringify(data || {}) + '\n\n') } catch (e) {}
+        }
+        dataSubscribers.add(send)
+        const heartbeat = setInterval(() => { try { res.write(': ping\n\n') } catch (e) {} }, 15000)
+        const cleanup = () => { dataSubscribers.delete(send); clearInterval(heartbeat) }
+        req.on('close', cleanup)
+        req.on('error', cleanup)
+      },
+    }))
   }
 }

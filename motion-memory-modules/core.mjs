@@ -258,6 +258,15 @@ export function createCore(ctx) {
     }
     await fs.writeText(target, text, undefined, undefined, policy)
   }
+  // 记忆文件落盘后通知界面层（mm-settings 订阅 → SSE 推页面 → 清对应页缓存）：
+  // 对话跟踪/记忆工具/界面保存全部经 writeJson/writeJsonCAS 写盘，统一在此发事件
+  function notifyDataChanged(path) {
+    try {
+      if (ctx && typeof ctx.emit === 'function') {
+        ctx.emit('motion-memory/data-changed', { rel: relOf(path), path: String(path || '') })
+      }
+    } catch (e) {}
+  }
   async function writeJson(path, obj, allowReadonly) {
     const release = await acquireWriteLock(path)
     try {
@@ -271,6 +280,7 @@ export function createCore(ctx) {
       const target = await fs.resolve(path)
       const policy = sessionPolicy()
       await writeTextChannel(target, JSON.stringify(next, null, 1), policy)
+      notifyDataChanged(path)
       return path
     } finally { release() }
   }
@@ -292,6 +302,7 @@ export function createCore(ctx) {
       const target = await fs.resolve(path)
       const policy = sessionPolicy()
       await writeTextChannel(target, JSON.stringify(next, null, 1), policy)
+      notifyDataChanged(path)
       return { ok: true, path, version: next.version }
     } finally { release() }
   }

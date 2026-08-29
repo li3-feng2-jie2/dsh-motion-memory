@@ -1053,6 +1053,8 @@ function MemoryView(props) {
   var scrollBoxRef = React.useRef(null)
   // 请求序号：快速切换页签时多个异步查询并发，响应按序号校验——过期响应直接丢弃，避免旧数据覆盖新页/滚动跳动
   var reqSeqRef = React.useRef(0)
+  // 当前页签 ref：供 EventSource 回调读取最新 tab（effect 闭包只捕获初始值）
+  var tabRef = React.useRef(tabV)
   // 页面内确认浮层（替代 window.confirm：嵌入环境可能被拦截导致点击无反应）
   var confirmS = React.useState(null)
   var confirmState = confirmS[0]
@@ -1500,8 +1502,9 @@ function MemoryView(props) {
   }
   // 会话切换（新窗口/换会话）或范围切换时按当前 sessionId 重载；tab 变化时刷新对应页
   // 编辑中不自动刷新（仅放弃/确认/模型更新后手动 refreshTab 触发）
-  // 切页签：总是重新拉取当前页（轮次列表数据必须最新；散文件已合并，扫描量小不慢）
-  React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [tabV])
+  // 切页签：优先用前端缓存（该页已有数据直接显示，不重查、不闪"加载中"）；
+  // 数据变更由 host 写盘后 SSE 通知清缓存 → 下次切换自动重新查询（不再每次切换都 force 全量重查）
+  React.useEffect(function () { tabRef.current = tabV; if (!editState) refreshTab(tabV, false) }, [tabV])
   // 会话/范围/焦点变化：数据源变了，强制重新查询
   React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [sessionId, scopeAllV, timeFromV, timeToV, searchArchV, focusSidV, editState])
   // 切页签/进出会话：滚动回顶部并清空跨页签滚动记忆（避免恢复上次底部位置，新内容从下方出现）
@@ -1509,6 +1512,21 @@ function MemoryView(props) {
     setScrollPos({})
     if (scrollBoxRef.current) scrollBoxRef.current.scrollTop = 0
   }, [tabV, focusSidV])
+  // 记忆数据变更通知（SSE）：host 写盘后推送 → 清非当前页缓存（当前页不自动刷新避免闪烁），下次切换取最新
+  React.useEffect(function () {
+    var es
+    try { es = new EventSource('/mmsettings/events') } catch (e) {}
+    if (!es) return
+    es.addEventListener('data-changed', function (ev) {
+      var cur = tabRef.current
+      if (cur !== 'turns') setTurns(null)
+      if (cur !== 'sessions') setSessions(null)
+      if (cur !== 'kws') setKws(null)
+      if (cur !== 'active') setActive(null)
+      if (cur !== 'periods') setPeriods(null)
+    })
+    return function () { try { es.close() } catch (e) {} }
+  }, [])
   // 加载配置（轮次页展示触发间隔等）
   React.useEffect(function () {
     callHost('config').then(function (r) {
