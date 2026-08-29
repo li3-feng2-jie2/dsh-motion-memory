@@ -1041,7 +1041,11 @@ export function apply(ctx) {
         // 15s 内存缓存（force 强制刷新）：全量扫描记忆文件较慢，频繁查看不必重扫。
         // 对话跟踪实时写聚合文件 → 刷新按钮传 force=true 绕过缓存拿最新。
         const forceT = !!(payload && payload.force)
-        const tKey = ['turns', payload && payload.sid ? String(payload.sid) : '', payload && payload.from ? Number(payload.from) : 0, payload && payload.to ? Number(payload.to) : 0, !!(payload && payload.includeArchive)].join('|')
+        // 兼容会话记忆页传入的无前缀 sid（列表派生自文件名 slice 掉 session- 前缀）：
+        // 聚合文件名 / sessionRef.sessionId / ref 均约定带 session- 前缀 → 归一化，避免匹配落空
+        const psidRaw = payload && payload.sid ? String(payload.sid) : ''
+        const normSid = psidRaw && psidRaw.indexOf('session-') !== 0 ? 'session-' + psidRaw : psidRaw
+        const tKey = ['turns', normSid, payload && payload.from ? Number(payload.from) : 0, payload && payload.to ? Number(payload.to) : 0, !!(payload && payload.includeArchive)].join('|')
         const tNow = Date.now()
         if (!forceT && state.mmCache && state.mmCache[tKey] && tNow - state.mmCache[tKey].at < 15000) {
           return { ok: true, ...state.mmCache[tKey].data }
@@ -1055,7 +1059,7 @@ export function apply(ctx) {
         const fromMs = payload && payload.from ? Number(payload.from) : 0
         const toMs = payload && payload.to ? Number(payload.to) : 0
         // 会话轮次范围（仅当按单一 sid 查询时统计）：min/max，供 client 检测缺失轮次
-        const rangeSid = payload && payload.sid ? String(payload.sid) : ''
+        const rangeSid = normSid
         let rangeMin = 0, rangeMax = 0
         const bumpRange = (turn) => {
           if (!turn) return
@@ -1098,7 +1102,7 @@ export function apply(ctx) {
             const sref = o.sessionRef
             const sid = sref && sref.sessionId ? sref.sessionId : ''
             const ref = sid ? sid + '@' + (sref.turn || 0) : ''
-            if (payload && payload.sid && ref && !ref.startsWith(String(payload.sid) + '@')) continue
+            if (payload && normSid && ref && !ref.startsWith(normSid + '@')) continue
             // 归档聚合文件：turns[] 逐条展开
             if (Array.isArray(o.turns) && o.turns.length) {
               for (const t of o.turns) {
@@ -1108,7 +1112,7 @@ export function apply(ctx) {
                   if ((fromMs && tm < fromMs) || (toMs && tm > toMs)) continue
                 }
                 const tref = sid ? sid + '@' + t.turn : ''
-                if (payload && payload.sid && tref && !tref.startsWith(String(payload.sid) + '@')) continue
+                if (payload && normSid && tref && !tref.startsWith(normSid + '@')) continue
                 out.push({ path: rel, title: (o.title || '') + ' · 轮次 ' + t.turn + '（归档）', content: String(t.content || ''), createdAt: t.at || o.createdAt || '', ref: tref, noModel: !!o.noModel, archived: true, month: (o.createdAt || '').slice(0, 7) })
               }
               continue
@@ -1125,7 +1129,7 @@ export function apply(ctx) {
           for (const c2 of children) {
             if (!c2 || c2.kind !== 'turn' || !c2.ref) continue
             const cref = String(c2.ref)
-            if (payload && payload.sid && !cref.startsWith(String(payload.sid) + '@')) continue
+            if (payload && normSid && !cref.startsWith(normSid + '@')) continue
             const crefSid = cref.split('@')[0]
             const turn = Number(cref.split('@')[1]) || 0
             if (rangeSid && crefSid === rangeSid) bumpRange(turn)

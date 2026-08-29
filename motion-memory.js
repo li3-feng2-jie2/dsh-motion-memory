@@ -1860,7 +1860,10 @@ export function apply(ctx) {
     // 返回 { ok, items: [{path,title,content,ref,noModel,createdAt,editHistory}], trackMetaMap }
     async turnList(args) {
       await ready().catch(() => {})
-      const sid = (args && args.sid) ? String(args.sid) : ''
+      // sid 归一化：聚合文件名 / sessionRef.sessionId / ref 约定带 session- 前缀；
+      // 会话记忆页列表派生的 sid 不带前缀（文件名 slice 掉前缀），直接匹配会全空 → 统一补前缀
+      let sid = (args && args.sid) ? String(args.sid) : ''
+      if (sid && sid.indexOf('session-') !== 0) sid = 'session-' + sid
       const safeSid = sid ? sanitizeFile(sid) : ''
       const items = []
       const trackMetaMap = {}
@@ -1920,8 +1923,10 @@ export function apply(ctx) {
       return { ok: true, items, trackMetaMap }
     },
     // 会话真实轮次范围（读会话日志 turn/start 事件）：轮次页按"1 到当前轮次"显示空白轮次供手动补充
-    async sessionTurnRange(args) {      const sid = (args && args.sid) || ''
+    async sessionTurnRange(args) {      let sid = (args && args.sid) ? String(args.sid) : ''
       if (!sid) return { ok: true, data: null }
+      // sid 归一化（同 turnList）：日志目录名带 session- 前缀，无前缀会找不到
+      if (sid.indexOf('session-') !== 0) sid = 'session-' + sid
       const turns = sessionTurnsOf(sid)
       if (!turns.length) return { ok: true, data: null }
       return { ok: true, data: { min: turns[0], max: turns[turns.length - 1] } }

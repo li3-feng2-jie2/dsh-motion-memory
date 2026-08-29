@@ -387,7 +387,19 @@ export function createCore(ctx) {
         }
       }
     } catch (e) {}
-    // ② 日志兜底：仅 header 拿不到 preset 时读日志（限前 30 帧，避免全量解压）
+    // ③ 日志首帧 session 事件（DSH 0.1.2+ 日志格式）：preset 在 session 事件顶层 agentPreset 字段，
+    // 该版本不再产生 agent-preset/selected 事件（实测 0.1.2+ 日志 11396 帧中 0 次出现）。
+    // 只解第 1 帧，比 ② 的 30 帧更省；无顶层 agentPreset（旧日志）则落到 ②。
+    try {
+      const first = await (_readerFirstFrames ? _readerFirstFrames(sid, 1) : [])
+      if (Array.isArray(first)) {
+        for (const e of first) {
+          if (e && e.type === 'session' && e.agentPreset) return String(e.agentPreset)
+        }
+      }
+    } catch (e) {}
+    // ② 日志兜底：仅 header/首帧拿不到 preset 时读日志（限前 30 帧，避免全量解压；
+    // 兼容旧版日志布局——agent-preset/selected 事件）
     try {
       const events = await (_readerFirstFrames ? _readerFirstFrames(sid, 30) : [])
       if (Array.isArray(events) && events.length) {

@@ -1695,9 +1695,12 @@ function MemoryView(props) {
           })
         })
       } }, '重试所有失败总结（' + failedList.length + '）') : null
+    var scopeLabel = scopeAllV
+      ? ('全部会话 · ' + items.length + ' 条' + (focusSidV ? '（聚焦 ' + focusSidV.slice(0, 8) + '…）' : ''))
+      : ('当前会话：' + (sessionId || '（未注入）') + ' · ' + items.length + ' 条 · 间隔：' + intervalLabel)
     var scopeBar = React.createElement('div', { key: '__scope', style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderBottom: '1px dashed var(--dsw-alias-border-l1)', fontSize: 12 } },
-      React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-all', flex: 1 } },
-        '当前会话：' + (sessionId || '（未注入）') + ' · ' + items.length + ' 条 · 间隔：' + intervalLabel),
+      React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-all', flex: 1 } }, scopeLabel),
+      React.createElement('button', { style: mmBtn, title: scopeAllV ? '切回仅显示当前窗口会话的轮次总结' : '查看所有会话的轮次总结', onClick: function () { setScopeAll(!scopeAllV) } }, scopeAllV ? '仅当前会话' : '全部会话'),
       retryBtn,
     )
     // 缺失/未设置轮次：第一轮(1) 到当前轮(turnRange.max 或已有最大轮) 全覆盖，连续缺失合并为区间
@@ -1802,6 +1805,13 @@ function MemoryView(props) {
       var d = allRows[di]
       if (d.kind === 'gap') rowEls.push(renderGapRow(d.g))
       else rowEls.push(renderTurnItem(d.it))
+    }
+    // 当前窗口会话范围且无任何总结时：给可操作提示（一键查看全部会话），避免"切换新窗口后一片空白"
+    if (!items.length && !focusSidV && !scopeAllV) {
+      rowEls.unshift(React.createElement('div', { key: '__empty_hint', style: Object.assign({}, mmEmpty, { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }) },
+        React.createElement('span', { style: { flex: 1 } }, '当前窗口会话暂无轮次总结' + (turnRange ? '（已有 ' + turnRange.max + ' 个轮次未总结，可在下方槽位补充）' : '') + '，可查看：'),
+        React.createElement('button', { style: mmBtn, onClick: function () { setScopeAll(true) } }, '全部会话'),
+      ))
     }
     return [scopeBar].concat(rowEls)
   }
