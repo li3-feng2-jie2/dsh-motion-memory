@@ -1852,9 +1852,73 @@ export function apply(ctx) {
       const text = await readTurnRef(ref, 32768)
       return { ok: true, content: text || '（该轮次无文本内容）' }
     },
+    // 轮次总结列表统一查询（mm-settings 轮次页专用）：
+    // 路径拼接优先——聚合文件约定 记忆累积/YYYY/MM/session-<sid>.json（每会话每月一个），
+    // 按 年/月 目录枚举直接定位，绝不递归全扫 记忆累积（避免数万文件逐个 stat+readJson）。
+    // 指定 sid → 只查该会话的聚合文件；无 sid（全部会话）→ 只扫 session-*.json 聚合文件。
+    // ref 指向：优先取 sourceChain 里第一个带 :stepN 的引用（精确到步骤），否则 会话@轮次。
+    // 返回 { ok, items: [{path,title,content,ref,noModel,createdAt,editHistory}], trackMetaMap }
+    async turnList(args) {
+      await ready().catch(() => {})
+      const sid = (args && args.sid) ? String(args.sid) : ''
+      const safeSid = sid ? sanitizeFile(sid) : ''
+      const items = []
+      const trackMetaMap = {}
+      try {
+        // 枚举 记忆累积/YYYY/MM/ 两级目录（只列目录，不递归文件树）
+        const base = dailyBaseDir()
+        const years = await listFiles(base, false)
+        for (const y of years) {
+          if (!y.name || !/^\d{4}$/.test(y.name)) continue
+          const months = await listFiles(p(base, y.name), false)
+          for (const m of months) {
+            if (!m.name || !/^\d{2}$/.test(m.name)) continue
+            const monthDir = p(base, y.name, m.name)
+            const files = await listFiles(monthDir, false)
+            for (const f of files) {
+              if (!f.name.endsWith('.json')) continue
+              // 指定 sid：只取该会话聚合文件；全部会话：只取 session- 聚合文件（散事件/周期/补充不在此层）
+              if (sid) { if (f.name !== safeSid + '.json') continue }
+              else if (f.name.indexOf('session-') !== 0) continue
+              const o = await readJson(f.path)
+              if (!o || isTombstone(o) || o.kind !== 'event') continue
+              const fileSid = (o.sessionRef && o.sessionRef.sessionId) ? o.sessionRef.sessionId : (sid || f.name.replace(/^session-/, '').replace(/\.json$/, ''))
+              if (sid && fileSid !== sid) continue
+              if (fileSid && Array.isArray(o.trackMeta) && o.trackMeta.length) {
+                const tm = o.trackMeta[o.trackMeta.length - 1]
+                trackMetaMap[fileSid] = { startTurn: Number(tm.startTurn) || 0, interval: Number(tm.interval) || 0 }
+              }
+              const editHist = (o.history || []).filter(x => x && x.op === 'update' && String(x.note || '').indexOf('轮次总结') >= 0).slice(-5).map(x => ({ at: x.at || '', note: x.note || '' }))
+              const turns = Array.isArray(o.turns) ? o.turns : []
+              if (!turns.length) continue
+              for (const t of turns) {
+                if (!t || !t.turn) continue
+                // 步骤级指向：sourceChain 第一条带 :stepN 的引用优先（refPrecision=step 时模型输出即 step 级）
+                // 兼容 md 链接形式 [标题](会话@轮次:stepN) → 剥壳取纯 ref
+                let ref = fileSid + '@' + t.turn
+                const sc = Array.isArray(t.sourceChain) ? t.sourceChain : []
+                for (const s of sc) {
+                  if (typeof s !== 'string') continue
+                  const inner = String(s).replace(/^\[[^\]]*\]\(/, '').replace(/\)\s*$/, '')
+                  if (/^[^@]+@\d+:step\d+/.test(inner)) { ref = inner; break }
+                }
+                items.push({ path: relOf(f.path), title: (o.title || '') + ' · 轮次 ' + t.turn, content: String(t.content || ''), createdAt: t.at || o.createdAt || '', ref, noModel: !!o.noModel, editHistory: editHist })
+              }
+            }
+          }
+        }
+        items.sort((a, b) => {
+          const ma = a.ref.match(/@(\d+)/), mb = b.ref.match(/@(\d+)/)
+          const ta = ma ? Number(ma[1]) : 0, tb = mb ? Number(mb[1]) : 0
+          return ta - tb || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)
+        })
+      } catch (e) {
+        return { ok: false, text: '轮次总结查询失败：' + ((e && e.message) || e), items: [] }
+      }
+      return { ok: true, items, trackMetaMap }
+    },
     // 会话真实轮次范围（读会话日志 turn/start 事件）：轮次页按"1 到当前轮次"显示空白轮次供手动补充
-    async sessionTurnRange(args) {
-      const sid = (args && args.sid) || ''
+    async sessionTurnRange(args) {      const sid = (args && args.sid) || ''
       if (!sid) return { ok: true, data: null }
       const turns = sessionTurnsOf(sid)
       if (!turns.length) return { ok: true, data: null }

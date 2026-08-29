@@ -1062,82 +1062,29 @@ export function apply(ctx) {
           if (!rangeMin || turn < rangeMin) rangeMin = turn
           if (turn > rangeMax) rangeMax = turn
         }
-        // 路径拼接优先（与主插件 readTurnAggContent 一致）：指定 sid 时直接读当前月聚合文件；
-        // 未命中 → 按文件名含 sid 定位散事件/跨月聚合（散事件命名 {DD}_{agent}_{sid尾12}_turnN_...，
-        // 聚合 session-<sid>.json），只读匹配文件，不做全量 readJson；
-        // 仅"全部会话"视图（无 sid）保留全量扫描。
-        let turnFiles = []
-        if (rangeSid) {
-          const curAggPath = p(r, '记忆累积', ymPath(new Date()), sanitizeFile(rangeSid) + '.json')
-          const agg = await readJson(curAggPath)
-          if (agg && !agg.tombstone && agg.kind === 'event' && Array.isArray(agg.turns) && agg.turns.length) {
-            turnFiles = [curAggPath]
-          } else {
-            const sidFull = sanitizeFile(rangeSid)
-            const sidTail = sidFull.slice(-12)
-            turnFiles = (await listFiles(dailyBaseDirOf(r), true))
-              .filter(f => f.name.indexOf(sidFull) >= 0 || f.name.indexOf(sidTail) >= 0)
-              .map(f => f.path)
-          }
-        } else {
-          turnFiles = (await listFiles(dailyBaseDirOf(r), true)).map(f => f.path)
-        }
-        for (const fPath of turnFiles) {
-          const rel = relOf(fPath, r)
-          // 事件文件路径：年/月/日 或 年/月/日_（单事件）；对话跟踪聚合文件为 年/月/session-<sid>.json（年月两级）
-          if (!/\d{4}\/\d{2}(?:\/|_)(?:\d{2}(?:\/|_))?/.test('/' + rel)) continue
-          if (rel.indexOf('周期记忆/') >= 0) continue
-          if (rel.indexOf('补充/') >= 0 || rel.indexOf('无模型记忆整理/') >= 0) continue
-          const o = await readJson(fPath)
-          if (!o || (o.tombstone) || o.kind !== 'event') continue
-          if (fromMs || toMs) {
-            let inRange = false
-            const tAt = (t) => parseIso((t && t.at) || '')
-            if (Array.isArray(o.turns) && o.turns.length) {
-              inRange = o.turns.some(x => { const tm = tAt(x); return (!fromMs || tm >= fromMs) && (!toMs || tm <= toMs) })
-            } else {
-              const cm = parseIso(o.createdAt || '')
-              inRange = (!fromMs || cm >= fromMs) && (!toMs || cm <= toMs)
-            }
-            if (!inRange) continue
-          }
-          // 该文件的界面手动修改历史（note 含"轮次总结"的 update 记录，最多 5 条，供页面显示）
-          const editHist = (o.history || []).filter(x => x && x.op === 'update' && String(x.note || '').indexOf('轮次总结') >= 0).slice(-5).map(x => ({ at: x.at || '', note: x.note || '' }))
-          // v5 会话聚合：文件含 turns[] → 逐条展开为独立轮次记录
-          if (Array.isArray(o.turns) && o.turns.length) {
-            // 会话归属：优先 sessionRef.sessionId；兜底 links.children 中第一个 turn 引用
-            const fileSid = (o.sessionRef && o.sessionRef.sessionId) ? o.sessionRef.sessionId : ''
-            // 该会话的跟踪配置（trackMeta 最后一条），供轮次页"跟踪设定内未总结"判断
-            if (fileSid && Array.isArray(o.trackMeta) && o.trackMeta.length) {
-              const tm = o.trackMeta[o.trackMeta.length - 1]
-              trackMetaMap[fileSid] = { startTurn: Number(tm.startTurn) || 0, interval: Number(tm.interval) || 0 }
-            }
-            for (const t of o.turns) {
-              if (!t || !t.turn) continue
+        // 统一查询：轮次总结列表走主插件 motionMemoryApi.turnList（路径拼接优先，
+        // 按 年/月 目录枚举 session-<sid>.json，不递归全扫 记忆累积——避免数万文件逐个 stat+readJson）。
+        // ref 指向由主插件生成：优先 sourceChain 带 :stepN 的引用（精确到步骤），否则 会话@轮次。
+        try {
+          const api = ctx.get('motionMemoryApi')
+          const tl = api && typeof api.turnList === 'function' ? await api.turnList({ sid: rangeSid || undefined }) : null
+          if (tl && tl.ok && Array.isArray(tl.items)) {
+            for (const it of tl.items) {
               if (fromMs || toMs) {
-                const tm = parseIso((t && t.at) || '')
+                const tm = parseIso(it.createdAt || '')
                 if ((fromMs && tm < fromMs) || (toMs && tm > toMs)) continue
               }
-              const ref = fileSid + '@' + t.turn
-              if (payload && payload.sid && !ref.startsWith(String(payload.sid) + '@')) continue
-              if (rangeSid && fileSid === rangeSid) bumpRange(Number(t.turn))
-              out.push({ path: rel, title: (o.title || '') + ' · 轮次 ' + t.turn, content: String(t.content || ''), createdAt: t.at || o.createdAt || '', ref, noModel: !!o.noModel, editHistory: editHist })
+              if (rangeSid) {
+                const m2 = it.ref.match(/^(.+)@(\d+)/)
+                const fileSid2 = m2 ? m2[1] : ''
+                if (fileSid2 === rangeSid) bumpRange(Number(m2[2]))
+              }
+              out.push(it)
             }
-            continue
+            const tmm = tl.trackMetaMap || {}
+            for (const k of Object.keys(tmm)) trackMetaMap[k] = tmm[k]
           }
-          let ref = ''
-          if (o.sessionRef && o.sessionRef.sessionId && o.sessionRef.turn) ref = o.sessionRef.sessionId + '@' + o.sessionRef.turn
-          if (!ref && o.links && Array.isArray(o.links.children)) {
-            for (const l of o.links.children) if (l && l.kind === 'turn' && l.ref) { ref = l.ref; break }
-          }
-          if (!ref && Array.isArray(o.sourceChain)) {
-            for (const s of o.sourceChain) if (typeof s === 'string' && s.indexOf('@') >= 0) { const m = s.match(/^(.+)@(\d+)/); if (m) { ref = m[1] + '@' + Number(m[2]); break } }
-          }
-          if (!ref) continue
-          if (payload && payload.sid && !ref.startsWith(String(payload.sid) + '@')) continue
-          if (rangeSid && ref.startsWith(rangeSid + '@')) bumpRange(Number(ref.split('@')[1]))
-          out.push({ path: rel, title: o.title || '', content: o.content || '', createdAt: o.createdAt || '', ref, noModel: !!o.noModel, editHistory: editHist })
-        }
+        } catch (e) {}
         // 归档内记忆搜索（includeArchive=true，配合时间段）：补充区 年/月 目录只读扫描（不触发移动回重要）
         if (payload && payload.includeArchive) {
           const archBase = p(r, '记忆累积', '补充')
@@ -1175,9 +1122,9 @@ export function apply(ctx) {
           const o = await readJson(f.path)
           if (!o || o.tombstone) continue
           const children = (o.links && o.links.children) || []
-          for (const c of children) {
-            if (!c || c.kind !== 'turn' || !c.ref) continue
-            const cref = String(c.ref)
+          for (const c2 of children) {
+            if (!c2 || c2.kind !== 'turn' || !c2.ref) continue
+            const cref = String(c2.ref)
             if (payload && payload.sid && !cref.startsWith(String(payload.sid) + '@')) continue
             const crefSid = cref.split('@')[0]
             const turn = Number(cref.split('@')[1]) || 0
@@ -1187,7 +1134,7 @@ export function apply(ctx) {
               const hit = String(o.content).split('\n').find(l => l.indexOf(cref) >= 0)
               if (hit) lineText = hit
             }
-            out.push({ path: relOf(f.path, r), title: '无模型记录', content: lineText || ('[用户消息](' + cref + ')'), createdAt: o.createdAt || '', ref: cref, noModel: true, fail: !!c.fail, failNote: c.failNote || '' })
+            out.push({ path: relOf(f.path, r), title: '无模型记录', content: lineText || ('[用户消息](' + cref + ')'), createdAt: o.createdAt || '', ref: cref, noModel: true, fail: !!c2.fail, failNote: c2.failNote || '' })
           }
         }
         out.sort((a, b) => {
