@@ -913,7 +913,8 @@ export function apply(ctx) {
         let gMin = 0, gMax = 0
         for (const f of await listFiles(dailyBaseDirOf(r), true)) {
           const rel = relOf(f.path, r)
-          if (!/\d{4}\/\d{2}\/\d{2}(?:\/|_)/.test('/' + rel)) continue
+          // v5 对话跟踪聚合文件为 年/月/session-<sid>.json（年月两级）；散事件为 年/月/日 或 年/月/日_（与 mm-turn-list 一致）
+          if (!/\d{4}\/\d{2}(?:\/|_)(?:\d{2}(?:\/|_))?/.test('/' + rel)) continue
           if (rel.indexOf('周期记忆/') >= 0 || rel.indexOf('补充/') >= 0 || rel.indexOf('无模型记忆整理/') >= 0) continue
           const o = await readJson(f.path)
           if (!o || o.tombstone || o.kind !== 'event') continue
