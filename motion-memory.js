@@ -1653,7 +1653,7 @@ export function apply(ctx) {
       const sid = m[1], turn = Number(m[2])
       const tc = trackCfg()
       const hasModel = !!(tc.model && tc.model.provider && tc.model.model)
-      if (!hasModel) return { ok: false, text: '无模型模式，无法重新总结（仅可手动编辑）' }
+      if (!hasModel) return { ok: false, text: '模型未配置：对话跟踪子功能未选具体模型、且记忆管理员模型为空——请在设置页「对话跟踪」选择模型（或配置记忆管理员模型）后再试' }
       const res = await runTurnSummary(sid, turn, { agent: 'memory-admin', session: state.lastSid || '', turn: 0, force: true })
       if (!res.ok) return res
       return { ok: true, text: '已重新总结轮次 ' + sid + '@' + turn + '：\n' + ((res && res.text) || '完成') }
@@ -1747,7 +1747,7 @@ export function apply(ctx) {
       if (!sid || !turn) return { ok: false, text: '缺少会话或轮次' }
       const tc = trackCfg()
       const hasModel = !!(tc.model && tc.model.provider && tc.model.model)
-      if (!hasModel) return { ok: false, text: '无模型模式，无法重新总结（仅可手动编辑）' }
+      if (!hasModel) return { ok: false, text: '模型未配置：对话跟踪子功能未选具体模型、且记忆管理员模型为空——请在设置页「对话跟踪」选择模型（或配置记忆管理员模型）后再试' }
       const res = await runTurnSummary(sid, turn, {
         agent: 'memory-admin', session: state.lastSid || '', turn: 0,
         force: true, ownerKey: ownerKeyOf(sid), mode,
