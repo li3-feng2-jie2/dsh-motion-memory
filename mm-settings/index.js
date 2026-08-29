@@ -15,6 +15,9 @@ export function apply(ctx) {
   const fs = ctx.fs
   const connection = ctx.connection
   const state = { sessionCwd: '', lastSid: '' }
+  // 记忆数据版本号：任何写盘（本插件写操作 / motion-memory 写事件）都 +1；
+  // 页面切换时查版本对比——变了才重新查询，没变直接用页面内存缓存（数据常驻、秒切）
+  let dataVersion = 0
 
   function normWs(ws) { return String(ws || '').replace(/\\/g, '/').replace(/\/+$/, '') }
   // 会话身份键：日志 agent-preset/selected 优先（经 motionMemoryApi），header 兜底
@@ -1619,6 +1622,10 @@ export function apply(ctx) {
         out.sort((a, b) => parseIso(b.createdAt) - parseIso(a.createdAt))
         return { ok: true, items: out }
       }
+      // 数据版本号：页面切换时对比（内存缓存保持 + 版本变化才重查）
+      case 'mm-data-version': {
+        return { ok: true, version: dataVersion }
+      }
       default:
         return { ok: false, text: '未知 endpoint：' + endpoint }
     }
@@ -1646,6 +1653,7 @@ export function apply(ctx) {
   // 下次切页签/刷新才重新查询——避免"每次切换都 force 全量重查"的卡顿。
   let dataSubscribers = new Set()
   function broadcastDataChanged(payload) {
+    dataVersion++  // 版本号递增：页面切换时据此判断是否需要重新查询
     state.mmCache = {}
     const pld = payload || {}
     for (const send of dataSubscribers) {

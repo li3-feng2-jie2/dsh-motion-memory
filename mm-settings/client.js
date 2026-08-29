@@ -1017,7 +1017,7 @@ function MemoryView(props) {
     // 切页签立即滚回顶部（不等 effect：快速切换时旧页可能滚在底部，新内容渲染后停在顶部）
     setScrollPos({})
     if (scrollBoxRef.current) scrollBoxRef.current.scrollTop = 0
-  }
+    try { window.scrollTo(0, 0) } catch (e) {}  // 兜底外层页面滚动（DSH 布局可能由外层容器滚动）
   var turns = React.useState(null)
   var turnsV = turns[0]
   var setTurns = turns[1]
@@ -1055,6 +1055,8 @@ function MemoryView(props) {
   var reqSeqRef = React.useRef(0)
   // 当前页签 ref：供 EventSource 回调读取最新 tab（effect 闭包只捕获初始值）
   var tabRef = React.useRef(tabV)
+  // host 数据版本号（内存缓存保持 + 版本变化才重查）：0=未初始化（首次切页不强制），会话切换时重置
+  var dataVersionRef = React.useRef(0)
   // 页面内确认浮层（替代 window.confirm：嵌入环境可能被拦截导致点击无反应）
   var confirmS = React.useState(null)
   var confirmState = confirmS[0]
@@ -1502,31 +1504,27 @@ function MemoryView(props) {
   }
   // 会话切换（新窗口/换会话）或范围切换时按当前 sessionId 重载；tab 变化时刷新对应页
   // 编辑中不自动刷新（仅放弃/确认/模型更新后手动 refreshTab 触发）
-  // 切页签：优先用前端缓存（该页已有数据直接显示，不重查、不闪"加载中"）；
-  // 数据变更由 host 写盘后 SSE 通知清缓存 → 下次切换自动重新查询（不再每次切换都 force 全量重查）
-  React.useEffect(function () { tabRef.current = tabV; if (!editState) refreshTab(tabV, false) }, [tabV])
-  // 会话/范围/焦点变化：数据源变了，强制重新查询
+  // 切页签：数据内存常驻（不清缓存）。切换时查 host 数据版本——版本变了才强制重查该页，
+  // 没变直接显示内存数据（秒切、零查询）。版本号由 host 在任意记忆写盘后递增。
+  React.useEffect(function () {
+    tabRef.current = tabV
+    if (editState) return
+    callHost('mm-data-version', {}).then(function (r) {
+      var v = r && r.version !== undefined ? Number(r.version) : -1
+      var changed = dataVersionRef.current !== 0 && v !== dataVersionRef.current
+      dataVersionRef.current = v
+      refreshTab(tabV, changed)
+    }).catch(function () { refreshTab(tabV, false) })
+  }, [tabV])
+  // 会话/范围/焦点变化：数据源变了，强制重新查询（新会话/新筛选 = 全新数据，版本重置）
+  React.useEffect(function () { dataVersionRef.current = 0 }, [sessionId])
   React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [sessionId, scopeAllV, timeFromV, timeToV, searchArchV, focusSidV, editState])
   // 切页签/进出会话：滚动回顶部并清空跨页签滚动记忆（避免恢复上次底部位置，新内容从下方出现）
   React.useEffect(function () {
     setScrollPos({})
     if (scrollBoxRef.current) scrollBoxRef.current.scrollTop = 0
+    try { window.scrollTo(0, 0) } catch (e) {}  // 兜底外层滚动
   }, [tabV, focusSidV])
-  // 记忆数据变更通知（SSE）：host 写盘后推送 → 清非当前页缓存（当前页不自动刷新避免闪烁），下次切换取最新
-  React.useEffect(function () {
-    var es
-    try { es = new EventSource('/mmsettings/events') } catch (e) {}
-    if (!es) return
-    es.addEventListener('data-changed', function (ev) {
-      var cur = tabRef.current
-      if (cur !== 'turns') setTurns(null)
-      if (cur !== 'sessions') setSessions(null)
-      if (cur !== 'kws') setKws(null)
-      if (cur !== 'active') setActive(null)
-      if (cur !== 'periods') setPeriods(null)
-    })
-    return function () { try { es.close() } catch (e) {} }
-  }, [])
   // 加载配置（轮次页展示触发间隔等）
   React.useEffect(function () {
     callHost('config').then(function (r) {
