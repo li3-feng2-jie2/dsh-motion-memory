@@ -465,7 +465,20 @@ export function createCore(ctx) {
     for (const e of await scanDir(dir, recursive, owner)) { if (e.obj.title === title) return e }
     return undefined
   }
-  async function findImportant(title, owner) { return findInDir(importantDir(), title, false, owner) }
+  async function findImportant(title, owner) {
+    // 拼接路径直读（重要目录文件名 = 标题净化）：O(1) 精确查询，避免全目录扫描
+    try {
+      const name = sanitizeFile(title) + '.json'
+      const path = p(importantDir(), name)
+      const o = await readJson(path)
+      if (o && !isTombstone(o) && o.title === title) {
+        if (owner) { const ow = ownerOf(o); if (ow && ow !== owner && ow !== 'memory-admin') return undefined }
+        return { obj: o, path, name }
+      }
+    } catch (e) {}
+    // 兜底：uniquePath 冲突命名（title-2.json）或历史遗留 → 扫描匹配
+    return findInDir(importantDir(), title, false, owner)
+  }
   async function findArchive(title, owner) { return findInDir(archiveBaseDir(), title, true, owner) }
   async function findKeyword(title, owner) {
     const a = await findImportant(title, owner)

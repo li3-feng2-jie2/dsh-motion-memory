@@ -309,7 +309,12 @@ export function apply(ctx) {
       for (const e of entries) {
         const child = p(dirPath, e.name)
         if (e.type === 'directory') { if (recursive) out.push(...(await listFiles(child, true))) }
-        else if (e.type === 'file') out.push({ path: child, name: e.name })
+        else if (e.type === 'file') {
+          // 带 mtime/size：供会话列表/轮次列表的"指纹缓存"判断文件是否变动（无变动不重扫）
+          let mtimeMs = 0, size = 0
+          try { const st = await fs.stat(child); mtimeMs = st.mtimeMs || 0; size = st.size || 0 } catch (err) {}
+          out.push({ path: child, name: e.name, mtimeMs, size })
+        }
       }
     } catch (e) {}
     return out
@@ -902,16 +907,21 @@ export function apply(ctx) {
       case 'mm-session-list': {
         const cacheKey = 'sessions'
         const forceS = !!(payload && payload.force)
-        const now = Date.now()
-        if (!forceS && state.mmCache && state.mmCache[cacheKey] && now - state.mmCache[cacheKey].at < 30000) {
-          return { ok: true, ...state.mmCache[cacheKey].data }
-        }
         const c = await readCfg()
         const r = rootOf(c)
+        const base = dailyBaseDirOf(r)
+        // 指纹缓存（变更驱动）：只 stat 文件元数据（不 readJson），指纹未变 → 直接命中，零重扫。
+        // 相比原来的 30s 定时过期：即使超时，只要记忆文件没有变动也不重扫。
+        const files = await listFiles(base, true)
+        const fp = files.map(f => f.name + ':' + (f.mtimeMs || 0) + ':' + (f.size || 0)).join('|')
+        const cached = state.mmCache && state.mmCache[cacheKey]
+        if (!forceS && cached && cached.fp === fp) {
+          return { ok: true, ...cached.data }
+        }
         const map = new Map()
         // 全部记忆文件的时间范围（供"会话记忆"页初始时间选择：最新 ~ 最旧）
         let gMin = 0, gMax = 0
-        for (const f of await listFiles(dailyBaseDirOf(r), true)) {
+        for (const f of files) {
           const rel = relOf(f.path, r)
           // v5 对话跟踪聚合文件为 年/月/session-<sid>.json（年月两级）；散事件为 年/月/日 或 年/月/日_（与 mm-turn-list 一致）
           if (!/\d{4}\/\d{2}(?:\/|_)(?:\d{2}(?:\/|_))?/.test('/' + rel)) continue
@@ -993,7 +1003,7 @@ export function apply(ctx) {
         }
         const data = { items: withAgent, globalRange: gMin ? { from: gMin, to: gMax || gMin } : null }
         state.mmCache = state.mmCache || {}
-        state.mmCache[cacheKey] = { at: Date.now(), data }
+        state.mmCache[cacheKey] = { at: Date.now(), fp, data }
         return { ok: true, ...data }
       }
       case 'mm-turn-list': {
