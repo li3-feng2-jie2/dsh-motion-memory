@@ -20,7 +20,7 @@ export function createQuery(core, deps) {
     readJson, writeJson, listFiles, isTombstone, tombstone,
     necessaryDir, importantDir, archiveBaseDir, dailyBaseDir, noModelDir, periodBaseDir,
     queryOwnerOf, findImportant, findKeyword, findArchive, scopeOwner,
-    scanDir, lastOpTime, pageSlice, isoStr, ownerOf,
+    scanDir, lastOpTime, pageSlice, isoStr, ownerOf, ownerKeyOfAsync,
   } = core
   const {
     resolveModelConfig, expandLinks, readTurnUserTextRetry, readAgentActive,
@@ -242,16 +242,27 @@ export function createQuery(core, deps) {
       files.sort((a, b) => (b.name < a.name ? -1 : b.name > a.name ? 1 : 0))
       for (const f of files) {
         const rel = relOf(f.path)
-        if (!isEventRel(rel)) continue
+        // 聚合文件（v5：年/月/session-<sid>.json）isEventRel 不认（只认 年/月/日 散事件命名），
+        // 但它是 kind=event 的轮次总结载体，最近事件总览必须包含——单独放行
+        const isAgg = /^session-[\w-]+\.json$/.test(f.name)
+        if (!isEventRel(rel) && !isAgg) continue
         const o = await readJson(f.path)
         if (o && !isTombstone(o) && o.kind === 'event') {
-          if (qOwner) { const ow = ownerOf(o); if (ow && ow !== qOwner && ow !== 'memory-admin') continue }
+          if (qOwner) {
+            let ow = ownerOf(o)
+            // 聚合文件 createdBy.agent 可能是模型 id（对话跟踪自动创建），归属按会话解析（preset:xxx）
+            if (isAgg && o.sessionRef && o.sessionRef.sessionId) {
+              try { const ok = await ownerKeyOfAsync(o.sessionRef.sessionId); if (ok) ow = ok } catch (e) {}
+            }
+            if (ow && ow !== qOwner && ow !== 'memory-admin') continue
+          }
           evs.push(o)
           if (evs.length >= n) break
         }
       }
     }
-    evs.sort((a, b) => parseIso(b.createdAt) - parseIso(a.createdAt))
+    // 排序：聚合文件多次追加轮次（updatedAt 变化）也按最新活动排，散事件 updatedAt≈createdAt
+    evs.sort((a, b) => parseIso(b.updatedAt || b.createdAt) - parseIso(a.updatedAt || a.createdAt))
     const top = evs.slice(0, n)
     parts.push('【最近' + top.length + '条事件记忆总览】' + (top.length ? top.map(o => o.title + '（' + o.createdAt + '）').join('；') : '（无）'))
     const noModelPending = []
