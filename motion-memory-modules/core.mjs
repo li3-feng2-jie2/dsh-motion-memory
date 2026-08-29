@@ -376,6 +376,9 @@ export function createCore(ctx) {
   // 内存读取零解压）；header 缺失时才读会话日志找 agent-preset/selected
   // （兼容旧版日志布局 / live 会话 header 未落盘的兜底）。
   async function sessionPresetOfAsync(sid) {
+    // sid 归一化：DSH 会话 id / 日志目录名约定带 session- 前缀；
+    // 会话记忆列表派生的 sid 可能不带前缀（文件名 slice 掉前缀），不归一化则日志路径查找全部落空
+    if (sid && sid.indexOf('session-') !== 0) sid = 'session-' + sid
     // ① header 快路径：DSH sessions 服务内存对象，不含文件 IO
     try {
       const sessions = ctx.get('sessions')

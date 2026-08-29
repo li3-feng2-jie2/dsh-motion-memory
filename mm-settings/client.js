@@ -1806,13 +1806,6 @@ function MemoryView(props) {
       if (d.kind === 'gap') rowEls.push(renderGapRow(d.g))
       else rowEls.push(renderTurnItem(d.it))
     }
-    // 当前窗口会话范围且无任何总结时：给可操作提示（一键查看全部会话），避免"切换新窗口后一片空白"
-    if (!items.length && !focusSidV && !scopeAllV) {
-      rowEls.unshift(React.createElement('div', { key: '__empty_hint', style: Object.assign({}, mmEmpty, { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }) },
-        React.createElement('span', { style: { flex: 1 } }, '当前窗口会话暂无轮次总结' + (turnRange ? '（已有 ' + turnRange.max + ' 个轮次未总结，可在下方槽位补充）' : '') + '，可查看：'),
-        React.createElement('button', { style: mmBtn, onClick: function () { setScopeAll(true) } }, '全部会话'),
-      ))
-    }
     return [scopeBar].concat(rowEls)
   }
   // 单个已总结轮次条目渲染（renderTurns 内联拆分，供排序后渲染）

@@ -975,7 +975,9 @@ export function apply(ctx) {
           if (!/session-[\w-]+\.json$/.test(f.name)) continue
           const o = await readJson(f.path)
           if (!o || o.tombstone || o.kind !== 'event') continue
-          const sid = f.name.slice('session-'.length, -'.json'.length)
+          // sid 保留 session- 前缀（与会话 id / 日志目录名 / 聚合文件名 / ref 约定一致，
+          // 避免下游 ownerKeyOfSession/readSessionTitleFromLog/turnList 因无前缀查不到日志与文件）
+          const sid = f.name.replace(/\.json$/, '')
           const cur = map.get(sid) || { sid, turns: 0, firstAt: '', lastAt: '', title: '', summary: '', records: [] }
           const turns = Array.isArray(o.turns) ? o.turns.length : (o.links && Array.isArray(o.links.children) ? o.links.children.filter(l => l && l.kind === 'turn').length : 1)
           cur.turns += turns
