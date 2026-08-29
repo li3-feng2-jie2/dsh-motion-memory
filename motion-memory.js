@@ -59,6 +59,7 @@ export function apply(ctx) {
     notifyOff: new Set(),   // 阶段3：memory_notify off 的会话 sid 集合
     configMtime: 0,         // 配置热重载：上次加载的配置文件 mtime（方案B）
     sessionLogCache: new Map(), // 会话日志缓存：sid -> { path, events, header, size, mtimeMs, frameCount }
+    ownerKeyCache: new Map(),   // ownerKey 结果缓存：sid -> 'preset:xxx'（会话内固定，页面刷新免重复解析）
     activeMigrateReport: null,  // 启动迁移报告（界面状态区可展示）
   }
 
@@ -684,29 +685,44 @@ export function apply(ctx) {
     const preset = sessionPresetOf(agentOrSession)
     return preset ? 'preset:' + preset : ''
   }
-  // 异步版：从会话日志取最新 agent-preset/selected（会话空白期切换智能体的实际运行 preset，
-  // DSH 以日志为准而非 header——header 保留创建时的值）。header 兜底，读不到日志回退同步逻辑。
+  // 异步版：优先 sessions 服务 header（新版 DSH header 事件自带 agentPreset，
+  // 内存读取零解压）；header 缺失时才读会话日志找 agent-preset/selected
+  // （兼容旧版日志布局 / live 会话 header 未落盘的兜底）。
   async function sessionPresetOfAsync(sid) {
+    // ① header 快路径：DSH sessions 服务内存对象，不含文件 IO
     try {
-      const events = await readSessionEvents(sid)
-      if (Array.isArray(events) && events.length) {
-        let selected = ''
-        for (const e of events) {
-          if (e && e.type === 'agent-preset/selected' && e.data && e.data.agentPreset) selected = String(e.data.agentPreset)
+      const sessions = ctx.get('sessions')
+      if (sessions && sid) {
+        const s = sessions.get(sid)
+        if (s) {
+          if (s.header && s.header.agentPreset) return String(s.header.agentPreset)
+          if (s.meta && s.meta.agentPreset) return String(s.meta.agentPreset)
         }
-        if (selected) return selected
       }
     } catch (e) {}
+    // ② 日志兜底：仅 header 拿不到 preset 时读日志（限前 30 帧，避免全量解压）
     try {
-      const s = sid && { header: {} }
-      // 直接读日志失败时回退：构造 header 查询（session 对象路径不可得时返回空）
-    } catch (e2) {}
+      const events = await readSessionEventsFirstFrames(sid, 30)
+      if (Array.isArray(events) && events.length) {
+        for (const e of events) {
+          if (e && e.type === 'agent-preset/selected' && e.data && e.data.agentPreset) return String(e.data.agentPreset)
+        }
+      }
+    } catch (e) {}
     return ''
   }
-  // 异步版 ownerKey：日志优先（agent-preset/selected），header 兜底
+  // 异步版 ownerKey：结果缓存（会话内 preset 固定，sid → ownerKey 直接复用，
+  // 避免会话记忆页每次刷新对全部会话重复解析）
   async function ownerKeyOfAsync(sid) {
+    if (!sid) return ''
+    const cached = state.ownerKeyCache && state.ownerKeyCache.get(sid)
+    if (cached) return cached
     const preset = await sessionPresetOfAsync(sid)
-    return preset ? 'preset:' + preset : ''
+    const ownerKey = preset ? 'preset:' + preset : ''
+    state.ownerKeyCache = state.ownerKeyCache || new Map()
+    if (state.ownerKeyCache.size > 500) state.ownerKeyCache.clear()
+    state.ownerKeyCache.set(sid, ownerKey)
+    return ownerKey
   }
   // 旧记忆归属归并（一次性）：把 owner 为 session-xxx 的历史记忆迁移到当前 preset 名下，
   // 使同一智能体（preset）的新会话能看到上一个会话创建的记忆
@@ -916,6 +932,33 @@ export function apply(ctx) {
     try {
       const snap = await sq.readSession(sid)
       return (snap && snap.events) || []
+    } catch (e) { return [] }
+  }
+  // 限帧读取：只解前 maxFrames 帧（agent-preset/selected 等早期事件定位用，
+  // 避免为找 1 个事件全量解压大日志；不写 sessionLogCache，不污染全量缓存）
+  function readSessionEventsFirstFrames(sid, maxFrames) {
+    try {
+      const path = sessionLogPathOf(sid, '')
+      if (!path) return []
+      const st = statSync(path)
+      if (!st.isFile()) return []
+      const buf = readFileSync(path)
+      const frames = scanZstdFrames(buf).frames
+      if (!frames.length) return []
+      const out = []
+      for (let i = 0; i < Math.min(frames.length, Math.max(1, Number(maxFrames) || 30)); i++) {
+        let plain
+        try { plain = zstdDecompressSync(buf.subarray(frames[i].start, frames[i].end)).toString('utf8') } catch (e) { continue }
+        for (const line of plain.split('\n')) {
+          const t = line.trim()
+          if (!t) continue
+          try {
+            const o = JSON.parse(t)
+            if (o && typeof o === 'object' && o.type) out.push(o)
+          } catch (e) {}
+        }
+      }
+      return out
     } catch (e) { return [] }
   }
   // 轻量读会话标题：只解前 20 帧找 session/title 事件，取最后一条 data.title（供设置界面会话列表使用）

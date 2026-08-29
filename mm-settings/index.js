@@ -314,6 +314,14 @@ export function apply(ctx) {
     } catch (e) {}
     return out
   }
+  // 与主插件 motion-memory 一致的文件定位辅助：会话聚合文件路径拼接（当前月直达），
+  // 界面侧查询复用主插件的路径拼接设计，避免全量扫描 记忆累积。
+  function sanitizeFile(name) { return String(name).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 80) || 'untitled' }
+  function ymPath(d) {
+    const dt = d || new Date()
+    const mm = String(dt.getMonth() + 1).padStart(2, '0')
+    return dt.getFullYear() + '/' + mm
+  }
   function lastOpTime(o) {
     const h = (o.history || [])
     return h.length ? parseIso(h[h.length - 1].at) : (parseIso(o.updatedAt) || parseIso(o.createdAt))
@@ -618,6 +626,7 @@ export function apply(ctx) {
       }
       case 'config-set': {
         const patch = (payload && payload.patch) || {}
+        state.modelsCache = null // 模型相关配置可能已变，失效 models 缓存
         const c = await readCfg()
         let changed = false
         const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'decayDays', 'activeNotify', 'queryOtherAgents', 'readTrimChars']
@@ -785,6 +794,9 @@ export function apply(ctx) {
       }
       case 'models': {
         // 探测 DSH 可用模型：settings 服务 + llm 目录（供界面提供模型选择）
+        // 5 分钟内存缓存：llm.listModels 探测可能很慢，设置页每次打开都会调用；config-set 时失效
+        const mNow = Date.now()
+        if (state.modelsCache && mNow - state.modelsCache.at < 300000) return { ok: true, ...state.modelsCache.data }
         const out = { providers: [], defaultModel: null, current: null }
         let defaultProvider = ''
         let defaultModel = ''
@@ -848,6 +860,7 @@ export function apply(ctx) {
             })
           }
         } catch (e) { out.llmErr = String(e) }
+        state.modelsCache = { at: Date.now(), data: out }
         return { ok: true, ...out }
       }
       case 'period-run': {
@@ -888,8 +901,9 @@ export function apply(ctx) {
       // 结果带 30s 内存缓存（避免频繁打开时全量重扫变慢）。
       case 'mm-session-list': {
         const cacheKey = 'sessions'
+        const forceS = !!(payload && payload.force)
         const now = Date.now()
-        if (state.mmCache && state.mmCache[cacheKey] && now - state.mmCache[cacheKey].at < 30000) {
+        if (!forceS && state.mmCache && state.mmCache[cacheKey] && now - state.mmCache[cacheKey].at < 30000) {
           return { ok: true, ...state.mmCache[cacheKey].data }
         }
         const c = await readCfg()
@@ -951,8 +965,14 @@ export function apply(ctx) {
             const titles = await sq.readTitleSnapshots(sids)
             if (Array.isArray(titles)) {
               for (let i = 0; i < titles.length && i < sids.length; i++) {
-                const t = titles[i] && titles[i].snapshot
-                if (t && t.title) items[i].title = String(t.title)
+                // 新版 DSH（0.1.2+）：readTitleSnapshots 返回 { sessionId, status, value:{ session, title? } }
+                // （旧版 { snapshot: { title } } 结构已失效，快路径静默取不到 → 全部跌落慢路径）
+                const r = titles[i]
+                if (!r || r.status !== 'fulfilled' || !r.value) continue
+                const snap = r.value.title
+                if (!snap) continue
+                const title = (typeof snap === 'string') ? snap : (snap && snap.title)
+                if (title) items[i].title = String(title)
               }
             }
           }
@@ -976,7 +996,14 @@ export function apply(ctx) {
         return { ok: true, ...data }
       }
       case 'mm-turn-list': {
-        // 不做前端缓存：对话跟踪实时写聚合文件，列表必须永远新鲜（散文件已合并，扫描量小不慢）
+        // 15s 内存缓存（force 强制刷新）：全量扫描记忆文件较慢，频繁查看不必重扫。
+        // 对话跟踪实时写聚合文件 → 刷新按钮传 force=true 绕过缓存拿最新。
+        const forceT = !!(payload && payload.force)
+        const tKey = ['turns', payload && payload.sid ? String(payload.sid) : '', payload && payload.from ? Number(payload.from) : 0, payload && payload.to ? Number(payload.to) : 0, !!(payload && payload.includeArchive)].join('|')
+        const tNow = Date.now()
+        if (!forceT && state.mmCache && state.mmCache[tKey] && tNow - state.mmCache[tKey].at < 15000) {
+          return { ok: true, ...state.mmCache[tKey].data }
+        }
         const c = await readCfg()
         const r = rootOf(c)
         const out = []
@@ -993,13 +1020,33 @@ export function apply(ctx) {
           if (!rangeMin || turn < rangeMin) rangeMin = turn
           if (turn > rangeMax) rangeMax = turn
         }
-        for (const f of await listFiles(dailyBaseDirOf(r), true)) {
-          const rel = relOf(f.path, r)
+        // 路径拼接优先（与主插件 readTurnAggContent 一致）：指定 sid 时直接读当前月聚合文件；
+        // 未命中 → 按文件名含 sid 定位散事件/跨月聚合（散事件命名 {DD}_{agent}_{sid尾12}_turnN_...，
+        // 聚合 session-<sid>.json），只读匹配文件，不做全量 readJson；
+        // 仅"全部会话"视图（无 sid）保留全量扫描。
+        let turnFiles = []
+        if (rangeSid) {
+          const curAggPath = p(r, '记忆累积', ymPath(new Date()), sanitizeFile(rangeSid) + '.json')
+          const agg = await readJson(curAggPath)
+          if (agg && !agg.tombstone && agg.kind === 'event' && Array.isArray(agg.turns) && agg.turns.length) {
+            turnFiles = [curAggPath]
+          } else {
+            const sidFull = sanitizeFile(rangeSid)
+            const sidTail = sidFull.slice(-12)
+            turnFiles = (await listFiles(dailyBaseDirOf(r), true))
+              .filter(f => f.name.indexOf(sidFull) >= 0 || f.name.indexOf(sidTail) >= 0)
+              .map(f => f.path)
+          }
+        } else {
+          turnFiles = (await listFiles(dailyBaseDirOf(r), true)).map(f => f.path)
+        }
+        for (const fPath of turnFiles) {
+          const rel = relOf(fPath, r)
           // 事件文件路径：年/月/日 或 年/月/日_（单事件）；对话跟踪聚合文件为 年/月/session-<sid>.json（年月两级）
           if (!/\d{4}\/\d{2}(?:\/|_)(?:\d{2}(?:\/|_))?/.test('/' + rel)) continue
           if (rel.indexOf('周期记忆/') >= 0) continue
           if (rel.indexOf('补充/') >= 0 || rel.indexOf('无模型记忆整理/') >= 0) continue
-          const o = await readJson(f.path)
+          const o = await readJson(fPath)
           if (!o || (o.tombstone) || o.kind !== 'event') continue
           if (fromMs || toMs) {
             let inRange = false
@@ -1120,7 +1167,10 @@ export function apply(ctx) {
             }
           } catch (e) {}
         }
-        return { ok: true, items: out, turnRange: rangeSid && rangeMin ? { min: rangeMin, max: rangeMax } : null, trackMetaMap }
+        const tResult = { items: out, turnRange: rangeSid && rangeMin ? { min: rangeMin, max: rangeMax } : null, trackMetaMap }
+        state.mmCache = state.mmCache || {}
+        state.mmCache[tKey] = { at: Date.now(), data: tResult }
+        return { ok: true, ...tResult }
       }
       case 'mm-turn-save': {
         const c = await readCfg()

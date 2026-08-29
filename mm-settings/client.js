@@ -1367,11 +1367,11 @@ function MemoryView(props) {
     if (t === 'kws') setKws(force ? null : kwsV)
     if (t === 'active') setActive(force ? null : activeV)
     if (t === 'periods') setPeriods(force ? null : periodsV)
-    if (t === 'turns') p = callHost('mm-turn-list', { sid: focusSidV || (scopeAllV ? '' : (sessionId || '')), from: 0, to: 0, includeArchive: searchArchV }).then(function (r) { setTurns((r && r.items) || []); setTurnRange((r && r.turnRange) || null); setTrackMetaMap((r && r.trackMetaMap) || {}) })
+    if (t === 'turns') p = callHost('mm-turn-list', { sid: focusSidV || (scopeAllV ? '' : (sessionId || '')), from: 0, to: 0, includeArchive: searchArchV, force: force }).then(function (r) { setTurns((r && r.items) || []); setTurnRange((r && r.turnRange) || null); setTrackMetaMap((r && r.trackMetaMap) || {}) })
     // 会话记忆页：列表态加载会话列表；进入某会话（focusSidV 非空）时加载该会话轮次
     if (t === 'sessions') {
-      if (focusSidV) p = callHost('mm-turn-list', { sid: focusSidV, from: fMs || 0, to: tMs || 0, includeArchive: searchArchV }).then(function (r) { setTurns((r && r.items) || []) })
-      else p = callHost('mm-session-list', {}).then(function (r) {
+      if (focusSidV) p = callHost('mm-turn-list', { sid: focusSidV, from: fMs || 0, to: tMs || 0, includeArchive: searchArchV, force: force }).then(function (r) { setTurns((r && r.items) || []) })
+      else p = callHost('mm-session-list', { force: force }).then(function (r) {
         setSessions((r && r.items) || [])
         // 首次打开会话记忆页时，时间选择范围 = 记忆文件最新 ~ 最旧
         var gr = r && r.globalRange
@@ -2267,7 +2267,7 @@ function MemoryView(props) {
   ) : null
   var rendered
   try {
-    rendered = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
+    rendered = React.createElement('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' }, 'data-conversation-composer-overlay': '' },
       React.createElement('div', { style: mmTabRow },
         tabs.map(function (t) { return React.createElement('span', { key: t.id, style: mmTabStyle(t.id === tabV), onClick: function () { setTab(t.id) } }, t.label) }),
         React.createElement('button', { style: Object.assign({}, mmBtn, { marginLeft: 'auto', padding: '2px 8px' }), title: '强制重新加载当前页', onClick: function () { refreshTab(tabV, true) } }, busyV ? '处理中…' : '刷新'),
@@ -2472,6 +2472,7 @@ function MemoryView(props) {
 }
     return {
       name: 'mm-settings',
+      inject: ['slots'],
       apply: function (ctx) {
         var slots = ctx.get('slots')
         if (!slots) return
