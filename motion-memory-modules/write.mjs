@@ -231,6 +231,50 @@ export function createWrite(core, deps) {
       await touchActive(meta, relOf(dst), 'memory_forget', [{ title: args.title, ref: relOf(found.path) }])
       return { ok: true, text: '已遗忘并移入补充：' + args.title + '（' + relOf(dst) + '）。可用 memory restore 捡回。' }
     }
+    // ── kind=reattach：模型通过上下文判断挂回/晋升（触发当前活跃启用得分）──
+    // 记忆在补充区（或重要区）但与会话工作强相关 → 挂回当前活跃（keywords 指针）+ 按 activeUsageScore 计分；
+    // promote=true 时同时从补充移动回重要（短时间多分）。
+    if (kind === 'reattach') {
+      const title = String(args.title || '').trim()
+      if (!title) return { ok: false, text: '需要 title' }
+      const found = await findKeyword(title, scopeOwner(meta))
+      if (!found) return { ok: false, text: '未找到记忆：' + title + '（可在补充区：先确认标题；或先用 restore 捡回）' }
+      const us = cfg().activeUsageScore || {}
+      const sc = Math.max(1, Number(us.score) || 1)
+      const boost = Math.max(1, Number(us.boost) || 2)
+      const promote = !!args.promote
+      if (promote) {
+        if (found.zone !== 'archive') return { ok: true, text: title + ' 已在重要区，无需晋升', data: { zone: found.zone } }
+        // 补充 → 重要（保留 id/history），并挂载当前活跃
+        const dst = await uniquePath(importantDir(), fileNameOf(found.path))
+        const o = found.obj
+        o.location = 'important'
+        o.history = o.history || []
+        o.history.push(histEntry('restore', { ...meta, note: '模型判断移动回重要' + (args.reason ? '：' + args.reason : '') }))
+        o.updatedAt = nowIso()
+        await writeJson(dst, o)
+        await tombstone(found.path, dst)
+        await touchActive(meta, relOf(dst), 'memory_promote', undefined, [title])
+        const n = Math.max(1, Math.round(sc * boost))
+        const times = []
+        for (let i = 0; i < n; i++) times.push(nowIso())
+        o.history.push(histEntry('query', { ...meta, note: '晋升计分 +' + n, times }))
+        await writeJson(dst, o)
+        return { ok: true, text: '已移动回重要并挂载当前活跃：' + title + '（得分 +' + n + '）', data: { zone: 'important' } }
+      }
+      // 挂回当前活跃（记忆保持在原区，标题加入活跃 keywords 指针）
+      found.obj.history = found.obj.history || []
+      found.obj.history.push(histEntry('update', { ...meta, note: '挂回当前活跃' + (args.reason ? '：' + args.reason : '') }))
+      found.obj.updatedAt = nowIso()
+      await writeJson(found.path, found.obj)
+      await touchActive(meta, relOf(found.path), 'memory_reattach', undefined, [title])
+      const n = Math.max(1, Math.round(sc))
+      const times = []
+      for (let i = 0; i < n; i++) times.push(nowIso())
+      found.obj.history.push(histEntry('query', { ...meta, note: '挂回计分 +' + n, times }))
+      await writeJson(found.path, found.obj)
+      return { ok: true, text: '已挂回当前活跃：' + title + '（得分 +' + n + '）', data: { zone: found.zone } }
+    }
     // ── keyword（默认）：同名返回已有，否则创建 ──
     const title = String(args.title || '').trim()
     if (!title) return { ok: false, text: '需要 title' }

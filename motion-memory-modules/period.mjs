@@ -547,6 +547,7 @@ export function createPeriod(core, deps) {
     try {
       const periodRel = relOf(path)
       const acts = []
+      const sinkLog = []  // 本周期 B 下沉归档到补充的记录（写回周期文件）
       for (const f of await listFiles(activeDir(), false)) {
         if (f.name === 'active.json' || !f.name.endsWith('.json')) continue
         const o = await readJson(f.path)
@@ -581,7 +582,8 @@ export function createPeriod(core, deps) {
               if (w.sid.indexOf('period:') === 0) continue  // 周期指向段不参与下沉
               if (coveredSids.has(w.sid)) {
                 // 该会话被本次周期覆盖 → 归档完整文本到补充同名文件后移除（B 下沉）
-                await archiveWorksSegment(w.sid, w, { agent: a.ownerKey, session: w.sid, turn: 0 }).catch(() => {})
+                const arc = await archiveWorksSegment(w.sid, w, { agent: a.ownerKey, session: w.sid, turn: 0 }).catch(() => null)
+                if (arc && arc.path) sinkLog.push({ sid: w.sid, rel: relOf(arc.path) })
                 const wIdx = wkArr.indexOf(w)
                 if (wIdx >= 0) wkArr.splice(wIdx, 1)
               }
@@ -604,6 +606,14 @@ export function createPeriod(core, deps) {
         await writeJson(a.path, a.obj)
       }
       if (acts.length) await refreshActiveIndex().catch(() => null)
+      // 本周期归档到补充的清单写回周期文件（记录移入补充的记忆，供追溯）
+      if (sinkLog.length) {
+        try {
+          obj.archiveLog = sinkLog
+          obj.content = String(obj.content || '') + '\n\n【本周期归档到补充（works 段下沉）】' + sinkLog.map(s => s.sid + ' → ' + s.rel).join('；')
+          await writeJson(path, obj)
+        } catch (eA) { console.error('[motion-memory] 周期归档清单写回失败: ' + (eA && eA.message)) }
+      }
     } catch (err) { console.error('[motion-memory] 周期总结活跃记录链更新失败: ' + (err && err.message)) }
     return { ok: true, text: '周期总结完成（' + (trigger === 'manual' ? '手动' : '自动') + '）：\n' + (res.content || '（空）') + '\n\n覆盖 ' + selected.length + ' 条事件，溯源 ' + (res.chain.length ? res.chain.join(' → ') : '（无）'), data: { path: relOf(path), trigger, covered: selected.length } }
   }

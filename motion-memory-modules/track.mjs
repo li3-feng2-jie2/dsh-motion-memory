@@ -321,7 +321,7 @@ export function createTrack(core, deps) {
         items.unshift({ id: sid + '@' + turn + ':curwork', text: '【本会话现有工作信息】\n' + workText + '\n\n【会话跟踪状态】' + trackedStatus + '。请参考上述"现有工作信息"判断本轮进展的 op（更新/合并/覆盖/新增）。字数限制：' + charsK2 + 'k token（md 超链接不计入）；你的输出不得超过输出上限（' + (Number(adminCfg().outputTokens) || 4000) + ' token）。保持内容精简。' + injectNote })
       } else if (cur) {
         // 程序已建空白段（新会话首次有效总结）：提示填充本会话工作段落（段已存在，无需 prepend 新建）
-        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】当前为空（本会话首次总结，程序已为本会话创建空白工作段）。\n【会话跟踪状态】' + trackedStatus + '。\n请按工作事情和进度总结本轮内容，写入本会话的工作段落（op 用 append 更新已有空白段即可），带 轮次/轮次+步 指向对应信息。字数限制：' + (Math.max(1, Number(cfg().summaryCharsK) || 2)) + 'k token（md 超链接不计入）；你的输出不得超过输出上限（' + (Number(adminCfg().outputTokens) || 4000) + ' token）。保持内容精简。' })
+        items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】当前为空（本会话首次总结，程序已为本会话创建空白工作段）。\n【会话跟踪状态】' + trackedStatus + '。\n请按工作事情和进度总结本轮内容，写入本会话的工作段落（op 用 append 更新已有空白段即可），带 轮次/轮次+步 指向对应信息。字数限制：' + (Math.max(1, Number(cfg().summaryCharsK) || 2)) + 'k token（md 超链接不计入）；你的输出不得超过输出上限（' + (Number(adminCfg().outputTokens) || 4000) + ' token）。保持内容精简。总结结构建议：做什么/进展/结论或待办；若本轮工作与当前活跃关键词或已有重要记忆主题相关，请在段落末尾注明"关联关键词：xxx"（用于关键词维护，勿编造）。' })
       } else {
         // 兜底：程序未建段（异常路径）→ 提示创建
         items.unshift({ id: sid + '@' + turn + ':newwork', text: '【本会话现有工作信息】无 —— 本次为全新会话/新窗口，当前活跃中还没有本会话的"会话工作"段落。请用 op="prepend" 创建本会话的工作段落（插到最前，旧的往后顶），并保持内容精简。\n【会话跟踪状态】' + trackedStatus })

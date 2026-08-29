@@ -1043,9 +1043,9 @@ export function apply(ctx) {
     agents: { type: 'boolean', description: 'true 时列出智能体记忆概览（有哪些智能体、各自记忆量），不执行普通查询' },
   }, [], memCmdQuery)
   // 5. 记忆写入（统一入口）：kind=keyword 重要关键词（同名返回已有）；necessary 必要记忆；event 事件；update 更新；forget 遗忘
-  tool('memory_add', '运动记忆·写入：kind=keyword（默认）创建重要关键词记忆——先查同名与近似标题：精确同名返回已有内容（同一实体信息变化→kind=update 更新；不同实体→用更具体标题新建并自动关联既有记忆），近似候选一并列出供判断消歧；kind=necessary 写入本智能体必要记忆（agent.md 语义，写入当前活跃 custom，随总览注入）；kind=event 创建事件记忆（日期目录，直接写入；带会话@轮次自动并入会话聚合记忆）；kind=update 更新已有关键词记忆（diff+mergeDated 自动合并时间变体+forgetIndexes）；kind=edit 按用户明确确认修改任意记忆文件（默认只读保护，必须 force=true）；kind=forget 主动遗忘移入补充。规则：①重要内容先落关键词（kind=keyword），默认自动挂载到当前活跃 keywords 成为指针（方便其他窗口按指针查询），无无缘无故的指向——引用必须真实溯源；②创建/更新关键词时同步维护当前活跃 keywords：对照近期会话工作（works）主题，移除与当前会话无关的过时词，保持关键词与近期工作相关有效（移除时说明理由）；③关键词数量不设硬上限，靠相关性维护约束。', {
-    kind: { type: 'string', enum: ['keyword', 'event', 'necessary', 'update', 'edit', 'forget'], description: '写入类型（默认 keyword）' },
-    title: { type: 'string', description: '标题（keyword/event/update/edit/forget 用）' },
+  tool('memory_add', '运动记忆·写入：kind=keyword（默认）创建重要关键词记忆——先查同名与近似标题：精确同名返回已有内容（同一实体信息变化→kind=update 更新；不同实体→用更具体标题新建并自动关联既有记忆），近似候选一并列出供判断消歧；kind=necessary 写入本智能体必要记忆（agent.md 语义，写入当前活跃 custom，随总览注入）；kind=event 创建事件记忆（日期目录，直接写入；带会话@轮次自动并入会话聚合记忆）；kind=update 更新已有关键词记忆（diff+mergeDated 自动合并时间变体+forgetIndexes）；kind=edit 按用户明确确认修改任意记忆文件（默认只读保护，必须 force=true）；kind=forget 主动遗忘移入补充；kind=reattach 模型通过上下文判断后挂回/晋升（补充区记忆与会话工作强相关时：挂回当前活跃或移动回重要，触发当前活跃启用得分）。规则：①重要内容先落关键词（kind=keyword），默认自动挂载到当前活跃 keywords 成为指针（方便其他窗口按指针查询），无无缘无故的指向——引用必须真实溯源；②创建/更新关键词时同步维护当前活跃 keywords：对照近期会话工作（works）主题，移除与当前会话无关的过时词，保持关键词与近期工作相关有效（移除时说明理由）；③关键词数量不设硬上限，靠相关性维护约束。', {
+    kind: { type: 'string', enum: ['keyword', 'event', 'necessary', 'update', 'edit', 'forget', 'reattach'], description: '写入类型（默认 keyword）' },
+    title: { type: 'string', description: '标题（keyword/event/update/edit/forget/reattach 用）' },
     content: { type: 'string', description: '内容（keyword/necessary/update/edit 用）' },
     material: { type: 'string', description: '素材（kind=event 用，直接写入）' },
     reason: { type: 'string', description: '记忆理由' },
@@ -1053,8 +1053,9 @@ export function apply(ctx) {
     links: { type: 'object', additionalProperties: true, description: '可选关联引用（keyword/event 用）' },
     clear: { type: 'boolean', description: 'kind=necessary 时 true=清空必要记忆' },
     append: { type: 'boolean', description: 'kind=update 时末尾追加' },
-    mergeDated: { type: 'boolean', description: 'kind=update 时合并日期变体' },
+    mergeDated: { type: 'boolean', description: 'kind=update 时合并日期变体（默认自动，false 禁用）' },
     forgetIndexes: { type: 'array', items: { type: 'integer' }, description: 'kind=update 遗忘更新历史索引' },
+    promote: { type: 'boolean', description: 'kind=reattach 时 true=同时从补充移动回重要（短时间多分）' },
   }, [], memCmdAdd)
   // 8. 捡回
 
