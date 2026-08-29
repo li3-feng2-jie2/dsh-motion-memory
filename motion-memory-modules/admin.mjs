@@ -37,6 +37,19 @@ export function createAdmin(core, deps) {
   // admin 顶层参数(contextTokens/summaryPercent/outputTokens/concurrency/extraJson)
   // 构成「默认实例」；子功能（track/enhance/period）的 model 是子实例：
   // 字段未定义 → 继承全局；已定义 → 覆盖（extraJson/concurrency 激活即整体覆盖）。
+  // 读取 provider 配置声明的第一个模型（settings llm-pi-ai.providers.<p>.models[0]）——
+  // 子功能 provider 已选但 model 缺失时自动补上（与设置页下拉"自动选择第一个模型"语义一致）
+  function firstModelOf(provider) {
+    try {
+      const home = dshHome()
+      if (!home || !provider) return ''
+      const f = p(home, 'settings.yaml')
+      if (!existsSync(f)) return ''
+      const text = readFileSync(f, 'utf8')
+      const m = text.match(new RegExp('llm-pi-ai:[\\s\\S]*?' + provider + ':[\\s\\S]*?models:[\\s\\S]*?\\{[\\s\\S]*?id:\\s*([^,}\\s]+)'))
+      return m ? String(m[1]).replace(/['"]/g, '') : ''
+    } catch (e) { return '' }
+  }
   function resolveModelConfig(sub) {
     const g = adminCfg()
     const gModel = g.model || {}
@@ -53,10 +66,14 @@ export function createAdmin(core, deps) {
       return (v && typeof v === 'object') ? v : undefined
     }
     // 模型继承链：子功能显式选中模型 → 用选中的；否则跟随全局（记忆管理员模型 admin.model）；
-    // 管理员模型空 → 无模型模式（不执行，不做 DSH 默认模型兜底）
+    // 子功能 provider 已选但 model 缺失 → 自动补该 provider 配置声明的第一个模型（下拉自动选择语义）；
+    // 以上都没有 → 无模型模式（不执行，不做 DSH 默认模型兜底）
+    const provider = (s.provider === '__none__') ? '' : ((s.provider !== undefined && s.provider !== '') ? String(s.provider) : (gModel.provider || ''))
+    let model = (s.provider === '__none__') ? '' : ((s.model !== undefined && s.model !== '') ? String(s.model) : (gModel.model || ''))
+    if (provider && !model) model = firstModelOf(provider)
     return {
-      provider: (s.provider === '__none__') ? '' : ((s.provider !== undefined && s.provider !== '') ? String(s.provider) : (gModel.provider || '')),
-      model: (s.provider === '__none__') ? '' : ((s.model !== undefined && s.model !== '') ? String(s.model) : (gModel.model || '')),
+      provider,
+      model,
       contextTokens: pick('contextTokens', Number),
       summaryPercent: pick('summaryPercent', Number),
       outputTokens: pick('outputTokens', Number),
