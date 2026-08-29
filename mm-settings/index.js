@@ -863,25 +863,25 @@ export function apply(ctx) {
               if (!provider || seen.has(provider)) continue
               seen.add(provider)
               let models = []
-              if (expand) {
-                // 完整模型列表（懒加载）：优先直接读配置声明的模型目录（settings.yaml llm-pi-ai.providers.<p>.models），
-                // 无需运行时探测；配置未声明该 provider 的模型时才用 listModels 探测兜底
-                let cfgModels = null
+              // 优先直接读配置声明的模型目录（settings llm-pi-ai.providers.<p>.models）——
+              // 纯文件读取（快），快路径也读：保证"提供商+模型"两级下拉立即可用，无需探测
+              let cfgModels = null
+              try {
+                const settingsSvc2 = ctx.get('settings')
+                const lpi = settingsSvc2 && settingsSvc2.get ? settingsSvc2.get('llm-pi-ai') : null
+                const pr = lpi && lpi.providers ? lpi.providers[provider] : null
+                if (pr && Array.isArray(pr.models)) {
+                  cfgModels = pr.models.map(m => (typeof m === 'string' ? m : (m && (m.id || m.model)))).filter(Boolean)
+                }
+              } catch (e) {}
+              if (cfgModels && cfgModels.length) {
+                models = cfgModels
+              } else if (expand) {
+                // 配置未声明该 provider 的模型 → 探测兜底（仅模型下拉展开时）
                 try {
-                  const settingsSvc2 = ctx.get('settings')
-                  const lpi = settingsSvc2 && settingsSvc2.get ? settingsSvc2.get('llm-pi-ai') : null
-                  const pr = lpi && lpi.providers ? lpi.providers[provider] : null
-                  if (pr && Array.isArray(pr.models)) {
-                    cfgModels = pr.models.map(m => (typeof m === 'string' ? m : (m && (m.id || m.model)))).filter(Boolean)
-                  }
+                  const ms = llmSvc.listModels ? await llmSvc.listModels(provider) : []
+                  models = Array.isArray(ms) ? ms.map(m => (typeof m === 'string' ? m : (m && (m.model || m.id || m.name)))).filter(Boolean) : []
                 } catch (e) {}
-                if (cfgModels && cfgModels.length) {
-                  models = cfgModels
-                } else {
-                  try {
-                    const ms = llmSvc.listModels ? await llmSvc.listModels(provider) : []
-                    models = Array.isArray(ms) ? ms.map(m => (typeof m === 'string' ? m : (m && (m.model || m.id || m.name)))).filter(Boolean) : []
-                  } catch (e) {}
                 }
               }
               // 快路径或探测为空且是当前默认 → 用 settings 的默认模型兜底

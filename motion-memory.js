@@ -1724,7 +1724,13 @@ export function apply(ctx) {
       await ready().catch(() => {})
       const force = !!(args && args.force)
       if (!force && state.lastUpdateCheck) return state.lastUpdateCheck
-      return autoUpdateCheck()
+      // 无缓存（如重启后首次打开设置页）：不阻塞首屏——后台执行检查并缓存，立即返回"检查中"
+      if (!state.updateCheckInflight) {
+        state.updateCheckInflight = autoUpdateCheck()
+          .catch(() => null)
+          .finally(() => { state.updateCheckInflight = null })
+      }
+      return { ok: true, checking: true, text: '正在检查更新…' }
     },
     async updateApply() {
       await ready().catch(() => {})
