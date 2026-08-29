@@ -48,10 +48,13 @@ export function projectKeyOf(cwd) {
   return '--' + slug.slice(0, 251) + '--'
 }
 
-/** 会话日志根目录（DSH_HOME/sessions） */
+/** 会话日志根目录（DSH_HOME/sessions；DSH_HOME 未设置时回退 USERPROFILE/.dsh/sessions——与 core.dshHome 一致，
+ *  DSH 0.1.2+ 启动后不再把 home 写入 process.env，无兜底会让帧级日志读取（归属解析/轮次范围/标题）全部失效） */
 export function sessionLogsRoot() {
   const home = String(process.env.DSH_HOME || '').replace(/\\/g, '/')
-  return home ? home + '/sessions' : ''
+  if (home) return home + '/sessions'
+  const up = String(process.env.USERPROFILE || '').replace(/\\/g, '/')
+  return up ? up + '/.dsh/sessions' : ''
 }
 
 /** 帧扫描（与 zstd.ts scanZstdFrames 一致）：不解压即可切出帧边界 */
