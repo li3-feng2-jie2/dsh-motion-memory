@@ -1019,27 +1019,8 @@ export function apply(ctx) {
           map.set(sid, cur)
         }
         const items = [...map.values()].sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || ''))
-        // 会话标题：优先 sessionQuery 标题服务（快）；无标题的会话再直接读 DSH 会话日志（zstd 帧）兜底
-        const sids = items.map(x => x.sid)
-        try {
-          const sq = ctx.get('sessionQuery')
-          if (sq && typeof sq.readTitleSnapshots === 'function' && sids.length) {
-            const titles = await sq.readTitleSnapshots(sids)
-            if (Array.isArray(titles)) {
-              for (let i = 0; i < titles.length && i < sids.length; i++) {
-                // 新版 DSH（0.1.2+）：readTitleSnapshots 返回 { sessionId, status, value:{ session, title? } }
-                // （旧版 { snapshot: { title } } 结构已失效，快路径静默取不到 → 全部跌落慢路径）
-                const r = titles[i]
-                if (!r || r.status !== 'fulfilled' || !r.value) continue
-                const snap = r.value.title
-                if (!snap) continue
-                const title = (typeof snap === 'string') ? snap : (snap && snap.title)
-                if (title) items[i].title = String(title)
-              }
-            }
-          }
-        } catch (e) {}
-        // 标题兜底：并行读会话日志（总耗时 = 最慢单个会话，而非串行累加；无标题会话日志可能很大）
+        // 标题读取：直接用帧级 readSessionTitleFromLog（实测全部 <10ms/个、命中率 19/19），
+        // 不再调 sessionQuery.readTitleSnapshots——它在首次扫描时对 19 个会话耗时 ~4.5s（慢 65 倍），是列表加载慢的直接来源。
         await Promise.all(items.map(async (it) => {
           if (it.title) return
           try { const t = await readSessionTitleFromLog(it.sid); if (t) it.title = t } catch (e) {}
