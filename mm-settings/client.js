@@ -2252,6 +2252,12 @@ function MemoryView(props) {
                       if (it.archived && it.month) { setTimeFrom(it.month + '-01'); setTimeTo(it.month + '-31') }
                       setEditState({ path: it.path, value: it.content || '' })
                     } }, '修改'),
+                    React.createElement('button', { style: mmBtn, onClick: function () {
+                      // 重新总结：弹窗选「当前活跃记忆总结 / 当时活跃记忆总结」后执行
+                      var tno = Number((it.ref.match(/@(\d+)/) || [])[1]) || 0
+                      if (!tno) { setMsg('无法解析轮次'); return }
+                      setRereviewTurn({ sid: focusSidV, turn: tno })
+                    } }, '重新总结'),
                   )
                   : React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center' } },
                     React.createElement('button', { style: mmBtn, onClick: saveTurnEdit }, '保存'),
