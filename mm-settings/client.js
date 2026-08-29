@@ -1022,6 +1022,11 @@ function MemoryView(props) {
   var turns = React.useState(null)
   var turnsV = turns[0]
   var setTurns = turns[1]
+  // 轮次总结分页（无限滚动）：hasMore/nextOffset/loading；TURNS_PAGE=每页条数
+  var TURNS_PAGE = 50
+  var turnsPageS = React.useState({ hasMore: false, nextOffset: 0, loading: false })
+  var turnsPage = turnsPageS[0]
+  var setTurnsPage = turnsPageS[1]
   var kws = React.useState(null)
   var kwsV = kws[0]
   var setKws = kws[1]
@@ -1418,7 +1423,16 @@ function MemoryView(props) {
     if (t === 'kws') setKws(force ? null : kwsV)
     if (t === 'active') setActive(force ? null : activeV)
     if (t === 'periods') setPeriods(force ? null : periodsV)
-    if (t === 'turns') p = callHost('mm-turn-list', { sid: focusSidV || (scopeAllV ? '' : (sessionId || '')), from: 0, to: 0, includeArchive: searchArchV, force: force }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setTurns((r && r.items) || []); setTurnRange((r && r.turnRange) || null); setTrackMetaMap((r && r.trackMetaMap) || {}) })
+    // 轮次总结：全部会话视图分页（首屏最新 50 条，滚动加载更旧）；当前会话/聚焦会话不分页（数据量小）
+    if (t === 'turns') {
+      var paginate = !focusSidV && scopeAllV
+      p = callHost('mm-turn-list', { sid: focusSidV || (scopeAllV ? '' : (sessionId || '')), from: 0, to: 0, includeArchive: searchArchV, force: force, offset: 0, limit: paginate ? TURNS_PAGE : 0 }).then(function (r) {
+        if (mySeq !== reqSeqRef.current) return
+        setTurns((r && r.items) || [])
+        setTurnsPage({ hasMore: !!(r && r.hasMore), nextOffset: (r && r.nextOffset) || 0, loading: false, total: (r && r.total) || 0 })
+        setTurnRange((r && r.turnRange) || null); setTrackMetaMap((r && r.trackMetaMap) || {})
+      })
+    }
     // 会话记忆页：列表态加载会话列表；进入某会话（focusSidV 非空）时加载该会话轮次
     if (t === 'sessions') {
       if (focusSidV) p = callHost('mm-turn-list', { sid: focusSidV, from: fMs || 0, to: tMs || 0, includeArchive: searchArchV, force: force }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setTurns((r && r.items) || []) })
@@ -1480,6 +1494,18 @@ function MemoryView(props) {
       }
     })
     p.catch(function (e) { if (mySeq === reqSeqRef.current) setMsg('加载失败: ' + String((e && e.message) || e)) }).finally(function () { if (mySeq === reqSeqRef.current) setBusy(false) })
+  }
+  // 轮次总结页：滚动触底加载更旧一页（移动端式无限滚动；仅全部会话视图分页）
+  function loadMoreTurns() {
+    if (focusSidV || !scopeAllV) return
+    if (!turnsPage.hasMore || turnsPage.loading) return
+    setTurnsPage(Object.assign({}, turnsPage, { loading: true }))
+    var seq = reqSeqRef.current
+    callHost('mm-turn-list', { sid: '', from: 0, to: 0, includeArchive: searchArchV, force: false, offset: turnsPage.nextOffset, limit: TURNS_PAGE }).then(function (r) {
+      if (seq !== reqSeqRef.current) return  // 期间已切页/刷新 → 丢弃
+      setTurns(function (prev) { return (prev || []).concat((r && r.items) || []) })
+      setTurnsPage({ hasMore: !!(r && r.hasMore), nextOffset: (r && r.nextOffset) || 0, loading: false })
+    }).catch(function () { setTurnsPage(Object.assign({}, turnsPage, { loading: false })) })
   }
   // 保存轮次总结编辑（编辑已有或新增缺失轮次）；失焦自动保存与保存按钮共用
   function saveTurnEdit() {
@@ -1731,7 +1757,7 @@ function MemoryView(props) {
         })
       } }, '重试所有失败总结（' + failedList.length + '）') : null
     var scopeLabel = scopeAllV
-      ? ('全部会话 · ' + items.length + ' 条' + (focusSidV ? '（聚焦 ' + focusSidV.slice(0, 8) + '…）' : ''))
+      ? ('全部会话 · ' + (turnsPage.total || items.length) + ' 条' + (items.length < (turnsPage.total || items.length) ? '（已载 ' + items.length + '）' : '') + (focusSidV ? '（聚焦 ' + focusSidV.slice(0, 8) + '…）' : ''))
       : ('当前会话：' + (sessionId || '（未注入）') + ' · ' + items.length + ' 条 · 间隔：' + intervalLabel)
     var scopeBar = React.createElement('div', { key: '__scope', style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderBottom: '1px dashed var(--dsw-alias-border-l1)', fontSize: 12 } },
       React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-all', flex: 1 } }, scopeLabel),
@@ -1841,7 +1867,14 @@ function MemoryView(props) {
       if (d.kind === 'gap') rowEls.push(renderGapRow(d.g))
       else rowEls.push(renderTurnItem(d.it))
     }
-    return [scopeBar].concat(rowEls)
+    // 底部加载提示（全部会话分页视图）：滚动触底自动加载更旧
+    var footerEls = []
+    if (scopeAllV && !focusSidV && turnsV && turnsV.length) {
+      footerEls.push(React.createElement('div', { key: '__turns_footer', style: Object.assign({}, mmEmpty, { textAlign: 'center', padding: '10px 12px' }) },
+        turnsPage.loading ? '加载更旧…' : (turnsPage.hasMore ? '↓ 继续滚动加载更旧' : '已到最旧'),
+      ))
+    }
+    return [scopeBar].concat(rowEls).concat(footerEls)
   }
   // 单个已总结轮次条目渲染（renderTurns 内联拆分，供排序后渲染）
   function renderTurnItem(it) {
@@ -1866,7 +1899,18 @@ function MemoryView(props) {
                 '⚠ 无模型记忆：仅记录用户消息' + (it.failNote ? '（模型总结失败：' + it.failNote + '）' : ''),
               ) : null,
               !isEditing
-            ? React.createElement('div', { style: { whiteSpace: 'pre-wrap' } }, mdText(it.content))
+            ? (function () {
+                // 折叠显示：默认只显示摘要一行（首屏渲染量大减），点击展开全文（细节后加载）
+                var isOpen = !!expandedV[it.path]
+                var fullContent = String(it.content || '')
+                var preview = fullContent.replace(/\s+/g, ' ').slice(0, 80)
+                return React.createElement('div', { style: { cursor: 'pointer' }, onClick: function (e) { e.stopPropagation(); toggleExpanded(it.path) }, title: isOpen ? '收起' : '展开全文' },
+                  isOpen
+                    ? React.createElement('div', { style: { whiteSpace: 'pre-wrap' } }, mdText(fullContent))
+                    : React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap' } },
+                        (preview || '（无内容）') + (fullContent.length > 80 ? '\n… 点击展开全文' : '')),
+                )
+              })()
             : autoTextArea(editState.value || '', function (e) { setEditState({ path: it.path, value: e.target.value }) }, null, null, saveTurnEdit),
           React.createElement('div', { style: btnRow },
             !isEditing
@@ -2404,7 +2448,14 @@ function MemoryView(props) {
         // 底部留空：DSH 聊天输入框（composer seat）会覆盖 overlay 底部一截，内容区加 paddingBottom 避免信息被遮挡
         style: { flex: 1, overflowY: 'auto', paddingBottom: 90 },
         ref: scrollBoxRef,
-        onScroll: function (e) { var st = e.target.scrollTop; var m = Object.assign({}, scrollPosV); m[tabV] = st; setScrollPos(m) },
+        onScroll: function (e) {
+          var st = e.target.scrollTop
+          var m = Object.assign({}, scrollPosV); m[tabV] = st; setScrollPos(m)
+          // 轮次总结页：滚动触底加载更旧（移动端式无限滚动）
+          if (tabRef.current === 'turns' && e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 150) {
+            loadMoreTurns()
+          }
+        },
       }, body),
       msgV ? React.createElement('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, msgV) : null,
       (popupV && popupV.length) ? (function () {

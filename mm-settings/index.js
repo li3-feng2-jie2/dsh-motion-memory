@@ -1148,10 +1148,16 @@ export function apply(ctx) {
           }
         }
         out.sort((a, b) => {
+          // 倒序：最新（轮次大）在前——配合分页"首屏最新、滚动加载更旧"
           const ma = a.ref.match(/@(\d+)/), mb = b.ref.match(/@(\d+)/)
           const ta = ma ? Number(ma[1]) : 0, tb = mb ? Number(mb[1]) : 0
-          return ta - tb || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)
+          return tb - ta || (b.ref < a.ref ? -1 : b.ref > a.ref ? 1 : 0)
         })
+        // 分页（无限滚动：首屏少量、滚动加载更旧）；limit=0 返回全部
+        const pOff = Number(payload && payload.offset) || 0
+        const pLim = Number(payload && payload.limit) || 0
+        const total = out.length
+        const pageOut = pLim > 0 ? out.slice(pOff, pOff + pLim) : out
         // 会话真实轮次上限兜底：即使无任何总结记录，也按"1 到当前轮次"显示空白轮次（用户可手动补充）
         // ——未跟踪/0 条总结时，轮次页仍能显示空白区间并创建对应事件记忆
         if (rangeSid) {
@@ -1166,7 +1172,7 @@ export function apply(ctx) {
             }
           } catch (e) {}
         }
-        const tResult = { items: out, turnRange: rangeSid && rangeMin ? { min: rangeMin, max: rangeMax } : null, trackMetaMap }
+        const tResult = { items: pageOut, total, hasMore: pLim > 0 && (pOff + pageOut.length) < total, nextOffset: pOff + pageOut.length, turnRange: rangeSid && rangeMin ? { min: rangeMin, max: rangeMax } : null, trackMetaMap }
         state.mmCache = state.mmCache || {}
         state.mmCache[tKey] = { at: Date.now(), data: tResult }
         return { ok: true, ...tResult }
