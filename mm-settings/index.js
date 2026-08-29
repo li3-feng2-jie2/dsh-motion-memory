@@ -320,6 +320,28 @@ export function apply(ctx) {
     } catch (e) {}
     return out
   }
+  // 精准枚举会话聚合文件（记忆累积/YYYY/MM/session-<sid>.json）：fs.listDir 两级目录枚举，
+  // 绝不递归全扫 记忆累积（散事件/周期/补充等文件量大，递归 stat 慢——会话列表加载慢的根因之一）。
+  // 返回 { path, name, size }，size 供指纹缓存判断内容变动（turns 追加 → size 变化 → 刷新）。
+  async function listAggregateFiles(base) {
+    const out = []
+    try {
+      const baseT = await fs.resolve(base)
+      for (const y of await fs.listDir(baseT)) {
+        if (!y || y.type !== 'directory' || !/^\d{4}$/.test(y.name)) continue
+        const yT = await fs.resolve(p(base, y.name))
+        for (const m of await fs.listDir(yT)) {
+          if (!m || m.type !== 'directory' || !/^\d{2}$/.test(m.name)) continue
+          const mT = await fs.resolve(p(base, y.name, m.name))
+          for (const fe of await fs.listDir(mT)) {
+            if (!fe || fe.type !== 'file' || !/^session-[\w-]+\.json$/.test(fe.name)) continue
+            out.push({ path: p(base, y.name, m.name, fe.name), name: fe.name, size: fe.size || 0 })
+          }
+        }
+      }
+    } catch (e) {}
+    return out
+  }
   // 与主插件 motion-memory 一致的文件定位辅助：会话聚合文件路径拼接（当前月直达），
   // 界面侧查询复用主插件的路径拼接设计，避免全量扫描 记忆累积。
   function sanitizeFile(name) { return String(name).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 80) || 'untitled' }
@@ -956,10 +978,10 @@ export function apply(ctx) {
         const c = await readCfg()
         const r = rootOf(c)
         const base = dailyBaseDirOf(r)
-        // 指纹缓存（变更驱动）：只 stat 文件元数据（不 readJson），指纹未变 → 直接命中，零重扫。
-        // 相比原来的 30s 定时过期：即使超时，只要记忆文件没有变动也不重扫。
-        const files = await listFiles(base, true)
-        const fp = files.map(f => f.name + ':' + (f.mtimeMs || 0) + ':' + (f.size || 0)).join('|')
+        // 精准枚举聚合文件（不递归全扫）：会话全部走 年/月/session-<sid>.json 聚合文件
+        const files = await listAggregateFiles(base)
+        // 指纹缓存（变更驱动）：name+size 指纹（聚合文件内容/turns 追加 size 随之变化 → 刷新）
+        const fp = files.map(f => f.name + ':' + (f.size || 0)).join('|')
         const cached = state.mmCache && state.mmCache[cacheKey]
         if (!forceS && cached && cached.fp === fp) {
           return { ok: true, ...cached.data }
@@ -969,10 +991,6 @@ export function apply(ctx) {
         let gMin = 0, gMax = 0
         for (const f of files) {
           const rel = relOf(f.path, r)
-          if (!/\d{4}\/\d{2}(?:\/|_)(?:\d{2}(?:\/|_))?/.test('/' + rel)) continue
-          if (rel.indexOf('周期记忆/') >= 0 || rel.indexOf('补充/') >= 0 || rel.indexOf('无模型记忆整理/') >= 0) continue
-          // 新方案：会话全部走聚合文件（年/月/session-<sid>.json）——只读聚合文件，散事件（旧格式/无会话上下文）不扫描不显示
-          if (!/session-[\w-]+\.json$/.test(f.name)) continue
           const o = await readJson(f.path)
           if (!o || o.tombstone || o.kind !== 'event') continue
           // sid 保留 session- 前缀（与会话 id / 日志目录名 / 聚合文件名 / ref 约定一致，
@@ -1021,9 +1039,11 @@ export function apply(ctx) {
             }
           }
         } catch (e) {}
-        for (const it of items) {
-          if (!it.title) it.title = await readSessionTitleFromLog(it.sid)
-        }
+        // 标题兜底：并行读会话日志（总耗时 = 最慢单个会话，而非串行累加；无标题会话日志可能很大）
+        await Promise.all(items.map(async (it) => {
+          if (it.title) return
+          try { const t = await readSessionTitleFromLog(it.sid); if (t) it.title = t } catch (e) {}
+        }))
         // 会话归属智能体（日志 agent-preset 解析）：无归属 = 子会话/非预设会话，不列入会话列表
         // （子会话不做记忆记录；主会话可经历史聊天推断其完成情况，需要时仍可用 memory_query 查询内容）
         const withAgent = []
