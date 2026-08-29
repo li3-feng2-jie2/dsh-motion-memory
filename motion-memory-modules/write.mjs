@@ -28,18 +28,13 @@ export function createWrite(core, deps) {
 
   async function memCmdAdd(args, meta) {
     const kind = args.kind || 'keyword'
-    // ── kind=necessary：每会话必要记忆（覆盖写，随总览注入）──
+    // ── kind=necessary：智能体级必要记忆（agent.md 语义，写入活跃 custom，随总览注入）──
     if (kind === 'necessary') {
-      const path = p(necessaryDir(), meta.session + '.json')
-      const nec = (await readJson(path)) || { sessionId: meta.session }
-      nec.sessionId = meta.session
-      nec.content = args.clear ? '' : String(args.content || '')
-      nec.turn = meta.turn
-      nec.updatedAt = nowIso()
-      nec.history = nec.history || []
-      nec.history.push(histEntry('necessary', { ...meta, note: args.clear ? '清空必要记忆' : '写入必要记忆' }))
-      await writeJson(path, nec)
-      state.necessaryCache.set(meta.session, { content: nec.content, updatedAt: nec.updatedAt })
+      const ownerKey = (meta && (meta.agent || meta.session)) ? String(meta.agent || meta.session) : ''
+      if (!ownerKey) return { ok: false, text: '无法确定智能体归属，必要记忆未写入' }
+      const content = args.clear ? '' : String(args.content || '')
+      await writeActive(meta.session, meta.turn || 0, { ownerKey, custom: content, me: meta, clear: !!args.clear })
+      state.necessaryCache.set(meta.session, { content, updatedAt: nowIso() })
       return { ok: true, text: args.clear ? '已清空必要记忆' : '必要记忆已写入（第' + meta.turn + '轮），下次请求将随记忆总览注入' }
     }
     // ── kind=event：事件记忆（日期目录，直接写入；带会话@轮次时并入会话聚合）──
@@ -138,7 +133,8 @@ export function createWrite(core, deps) {
         delta = diffContent(oldContent, obj.content)
       }
       let mergedVariant = null
-      if (args.mergeDated) {
+      // 自动检测日期变体（标题-YYYYMMDD.json）并合并；传 mergeDated=false 可禁用（默认自动）
+      if (args.mergeDated !== false) {
         let best = null
         for (const f of await listFiles(importantDir(), false)) {
           if (!/\d{8}\.json$/.test(f.name)) continue

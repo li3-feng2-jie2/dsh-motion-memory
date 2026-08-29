@@ -122,6 +122,14 @@ export function createActive(core, deps) {
     if (extra) {
       if (extra.lastMemRef !== undefined && extra.lastMemRef !== act.lastMemRef) { act.lastMemRef = extra.lastMemRef; refChanged = true }
       if (extra.lastAction !== undefined && extra.lastAction !== act.lastAction) { act.lastAction = extra.lastAction; refChanged = true }
+      // 必要记忆（agent.md 语义）：写入智能体活跃 custom（手动/工具维护，对话跟踪不覆盖）
+      if (typeof extra.custom === 'string' && extra.custom !== act.custom) {
+        act.custom = extra.custom
+        pushMergedHistory(act, histEntry('necessary', {
+          ...(extra.me || {}), note: (extra && extra.clear) ? '清空必要记忆' : '写入必要记忆', keep: true,
+        }), null)
+        recordChanged = true
+      }
     }
     let recordChanged = false
     if (extra && extra.record && extra.record.text) {
@@ -169,7 +177,14 @@ export function createActive(core, deps) {
             if (seen[k]) {
               const keep = seen[k]
               keep.text = String(keep.text || '') + '。' + String(r.text || '')
-              keep.refs = (keep.refs || []).concat(r.refs || [])
+              // refs 去重追加（对话跟踪同一事件 ref 不再重复累积——此前同一 key 直接 concat 导致重复膨胀）
+              const curRefs = Array.isArray(keep.refs) ? keep.refs : []
+              const refSet = new Set(curRefs.map(x => (x.kind || '') + '|' + (x.ref || x.title || '')))
+              for (const r2 of (r.refs || [])) {
+                const rk = (r2.kind || '') + '|' + (r2.ref || r2.title || '')
+                if (!refSet.has(rk)) { refSet.add(rk); curRefs.push(r2) }
+              }
+              keep.refs = curRefs
               return false
             }
             seen[k] = r
@@ -182,9 +197,10 @@ export function createActive(core, deps) {
       }
     }
     if (extra && Array.isArray(extra.keywords)) {
+      // 关键词不设数量上限（v6）：维护靠"与近期会话工作相关"规则，去重即可
       const merged = (Array.isArray(act.keywords) ? act.keywords : []).concat(extra.keywords.map(String))
       const seen = new Set()
-      const next = merged.filter(k => { const s = String(k || '').trim(); if (!s || seen.has(s)) return false; seen.add(s); return true }).slice(0, 20)
+      const next = merged.filter(k => { const s = String(k || '').trim(); if (!s || seen.has(s)) return false; seen.add(s); return true })
       if (next.join('|') !== (Array.isArray(act.keywords) ? act.keywords : []).join('|')) { act.keywords = next; recordChanged = true }
     }
     if (extra && extra.explicitSummary) {

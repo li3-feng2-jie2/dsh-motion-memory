@@ -673,33 +673,14 @@ export function apply(ctx) {
     // 懒归档：挪入空闲队列（scheduleWork），不在查询/总览路径同步全扫；
     // 扫描顺序固定"先未压缩（重要+无模型）"，补充/周期等已压缩区不做全量扫描
     try { scheduleWork('archive', () => lazyArchive(), '懒归档扫描').catch(() => {}) } catch (e) {}
-    const nec = await readJson(p(necessaryDir(), sid + '.json'))
-    // 总览按本智能体归属过滤（只看自己的 + 管理员共享产物；queryOtherAgents 开则全量）
-    const ovOwner = cfg().queryOtherAgents ? '' : (ownerKey || sid || '')
-    // 重要记忆：按分数排序（创建×3 + 查询×次数 + 更新×2 + 遗忘/捡回×1 + 时间衰减，与关键词页一致）
-    const important = []
-    for (const e of await scanDir(importantDir(), false, ovOwner)) {
-      const o = e.obj
-      const hist = Array.isArray(o.history) ? o.history : []
-      let score = 0
-      for (const h of hist) {
-        const op = h && h.op
-        if (op === 'create') score += 3
-        else if (op === 'query') score += Array.isArray(h.times) && h.times.length ? h.times.length : 1
-        else if (op === 'update') score += 2
-        else if (op === 'forget' || op === 'restore') score += 1
-      }
-      const lastAt = parseIso(o.lastAccessedAt) || lastOpTime(o) || 0
-      if (lastAt) {
-        const ageDays = Math.max(0, (Date.now() - lastAt) / 86400000)
-        const scDecay = Math.max(1, Number(cfg().decayDays) || 30)
-        const floor = Math.max(0.1, Number(cfg().indexScore && cfg().indexScore.floor) || 0.2)
-        score = score * Math.max(floor, 1 - ageDays / scDecay)
-      }
-      important.push({ title: o.title || '', score })
-    }
-    important.sort((a, b) => (b.score - a.score) || String(a.title).localeCompare(String(b.title)))
-    const importantTop = important.slice(0, 100)
+    // 必要记忆（agent.md 语义）：智能体活跃 custom，随总览注入；为空不注入
+    let nec = null
+    try {
+      const act = await readAgentActive(ownerKey || sid || '')
+      if (act && act.obj && String(act.obj.custom || '').trim()) nec = { content: String(act.obj.custom) }
+    } catch (e) {}
+    // 重要记忆标题不再注入（v6：改为当前活跃关键词指针 + 按需 memory_query open 挂载本体）
+    const importantTop = []
     // 最近会话工作：各智能体活跃文件 works 的最近工作段摘要（条数用 recentOverviewN 设定）
     const recentWorks = []
     try {
@@ -723,7 +704,7 @@ export function apply(ctx) {
     try {
       const act = await readAgentActive(ownerKey || sid || '')
       if (act && act.obj) {
-        if (Array.isArray(act.obj.keywords)) keywords = act.obj.keywords.slice(0, 20)
+        if (Array.isArray(act.obj.keywords)) keywords = act.obj.keywords.slice(0, 50)  // 指针全量（安全上限 50，维护规则控制实际数量）
         // 空白工作段检测：程序已建段但尚无内容（模型总结失败/无模型待转正）→ 提醒需要总结
         if (Array.isArray(act.obj.works)) {
           blankWorks = act.obj.works
@@ -761,9 +742,8 @@ export function apply(ctx) {
     const lines = [
       '<system-reminder>',
       '运动记忆·会话总览（仅当记忆变化时更新；需要细节时用 memory_query 查看）：',
-      '必要记忆：' + (entries.necessary || '（无）'),
-      '重要记忆（' + entries.important.length + ' 条）：' + (entries.important.length ? entries.important.map(t => t.title).join('；') : '（无）'),
     ]
+    if (entries.necessary) lines.push('必要记忆：' + entries.necessary)
     if (entries.keywords && entries.keywords.length) lines.push('当前活跃关键词：' + entries.keywords.join('、'))
     // 待总结提醒：区分对话跟踪状态——未开启：大段工作完成后自行总结；已开启：跟踪自动总结，不需全部自行总结
     if (!trackOn) {
@@ -1063,7 +1043,7 @@ export function apply(ctx) {
     agents: { type: 'boolean', description: 'true 时列出智能体记忆概览（有哪些智能体、各自记忆量），不执行普通查询' },
   }, [], memCmdQuery)
   // 5. 记忆写入（统一入口）：kind=keyword 重要关键词（同名返回已有）；necessary 必要记忆；event 事件；update 更新；forget 遗忘
-  tool('memory_add', '运动记忆·写入：kind=keyword（默认）创建重要关键词记忆——先查同名与近似标题：精确同名返回已有内容（同一实体信息变化→kind=update 更新；不同实体→用更具体标题新建并自动关联既有记忆），近似候选一并列出供判断消歧；kind=necessary 写入每会话必要记忆（随总览注入）；kind=event 创建事件记忆（日期目录，直接写入；带会话@轮次自动并入会话聚合记忆）；kind=update 更新已有关键词记忆（diff+mergeDated+forgetIndexes）；kind=edit 按用户明确确认修改任意记忆文件（默认只读保护，必须 force=true）；kind=forget 主动遗忘移入补充。规则：重要内容先落关键词（kind=keyword），当前活跃里再指向它；更新当前活跃记忆时同步整理 keywords 块（移除已过时/重复的词，加入本轮新主题，keywords 是短词列表 ≤10 个）；无无缘无故的指向——引用必须真实溯源（事件/会话@轮次[:step]/关键词），用户手动操作豁免。', {
+  tool('memory_add', '运动记忆·写入：kind=keyword（默认）创建重要关键词记忆——先查同名与近似标题：精确同名返回已有内容（同一实体信息变化→kind=update 更新；不同实体→用更具体标题新建并自动关联既有记忆），近似候选一并列出供判断消歧；kind=necessary 写入本智能体必要记忆（agent.md 语义，写入当前活跃 custom，随总览注入）；kind=event 创建事件记忆（日期目录，直接写入；带会话@轮次自动并入会话聚合记忆）；kind=update 更新已有关键词记忆（diff+mergeDated 自动合并时间变体+forgetIndexes）；kind=edit 按用户明确确认修改任意记忆文件（默认只读保护，必须 force=true）；kind=forget 主动遗忘移入补充。规则：①重要内容先落关键词（kind=keyword），默认自动挂载到当前活跃 keywords 成为指针（方便其他窗口按指针查询），无无缘无故的指向——引用必须真实溯源；②创建/更新关键词时同步维护当前活跃 keywords：对照近期会话工作（works）主题，移除与当前会话无关的过时词，保持关键词与近期工作相关有效（移除时说明理由）；③关键词数量不设硬上限，靠相关性维护约束。', {
     kind: { type: 'string', enum: ['keyword', 'event', 'necessary', 'update', 'edit', 'forget'], description: '写入类型（默认 keyword）' },
     title: { type: 'string', description: '标题（keyword/event/update/edit/forget 用）' },
     content: { type: 'string', description: '内容（keyword/necessary/update/edit 用）' },
