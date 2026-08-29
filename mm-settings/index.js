@@ -965,48 +965,52 @@ export function apply(ctx) {
         let gMin = 0, gMax = 0
         for (const f of files) {
           const rel = relOf(f.path, r)
-          // v5 对话跟踪聚合文件为 年/月/session-<sid>.json（年月两级）；散事件为 年/月/日 或 年/月/日_（与 mm-turn-list 一致）
+          // v5 对话跟踪聚合文件为 年/月/session-<sid>.json（年月两级）；散事件为 年/月/日 或 年/月/日_
           if (!/\d{4}\/\d{2}(?:\/|_)(?:\d{2}(?:\/|_))?/.test('/' + rel)) continue
           if (rel.indexOf('周期记忆/') >= 0 || rel.indexOf('补充/') >= 0 || rel.indexOf('无模型记忆整理/') >= 0) continue
-          const o = await readJson(f.path)
-          if (!o || o.tombstone || o.kind !== 'event') continue
-          // 全局时间范围统计（文件创建/更新时间，忽略无时间文件）
-          const gCreated = parseIso(o.createdAt || '')
-          const gUpdated = parseIso(o.updatedAt || '') || gCreated
-          if (gCreated && (!gMin || gCreated < gMin)) gMin = gCreated
-          if (gUpdated && gUpdated > gMax) gMax = gUpdated
-          // sid 提取：优先 sessionRef；兜底 links.children 的 turn ref / sourceChain（旧格式无 sessionRef）
-          let sid = (o.sessionRef && o.sessionRef.sessionId) ? o.sessionRef.sessionId : ''
-          if (!sid) {
-            if (o.links && Array.isArray(o.links.children)) {
-              for (const l of o.links.children) {
-                if (l && l.kind === 'turn' && l.ref) { const mm = String(l.ref).match(/^(session-[\w-]+)@/); if (mm) { sid = mm[1]; break } }
-              }
-            }
+          // 路径拼装优先：聚合文件（session-<sid>.json）直接读（数量少）；散事件只从文件名解析 sid（零内容读取），
+          // 对应记忆文件的内容在点击进入会话（轮次视图 mm-turn-list）时按 sid 定向加载
+          const isAgg = /session-[\w-]+\.json$/.test(f.name)
+          let sid = ''
+          let o = null
+          if (isAgg) {
+            o = await readJson(f.path)
+            if (!o || o.tombstone || o.kind !== 'event') continue
+            sid = f.name.slice('session-'.length, -'.json'.length)
+          } else {
+            const m = String(f.name).match(/session-([\w-]+)/)
+            if (!m) continue  // 无 session 段的散事件（早期手动事件）不在列表归并
+            sid = m[1]
           }
-          if (!sid && Array.isArray(o.sourceChain)) {
-            for (const s of o.sourceChain) { const mm = String(s).match(/^(session-[\w-]+)@/); if (mm) { sid = mm[1]; break } }
-          }
-          if (!sid) continue
-          // title 初始为空：会话标题只取会话日志标题（界面会话顶部的短标题），
-          // 聚合文件标题（"对话跟踪总结：会话 xxx"）无信息量，不作为列表标题
           const cur = map.get(sid) || { sid, turns: 0, firstAt: '', lastAt: '', title: '', summary: '', records: [] }
-          const turns = Array.isArray(o.turns) ? o.turns.length : (o.links && Array.isArray(o.links.children) ? o.links.children.filter(l => l && l.kind === 'turn').length : 1)
-          cur.turns += turns
-          const ats = []
-          if (Array.isArray(o.turns) && o.turns.length) {
-            for (const t of o.turns) { if (t && t.at) ats.push(String(t.at)) }
+          if (o) {
+            // 聚合文件：轮次统计 + 时间范围 + 摘要（content 首行）
+            const turns = Array.isArray(o.turns) ? o.turns.length : (o.links && Array.isArray(o.links.children) ? o.links.children.filter(l => l && l.kind === 'turn').length : 1)
+            cur.turns += turns
+            const ats = []
+            if (Array.isArray(o.turns) && o.turns.length) {
+              for (const t of o.turns) { if (t && t.at) ats.push(String(t.at)) }
+            }
+            ats.push(o.updatedAt || o.createdAt || '')
+            for (const a of ats) {
+              if (!a) continue
+              if (!cur.firstAt || a < cur.firstAt) cur.firstAt = a
+              if (!cur.lastAt || a > cur.lastAt) cur.lastAt = a
+            }
+            const contentFirst = String(o.content || '').split('\n')[0].slice(0, 80)
+            if (contentFirst && (!cur.summary || (o.updatedAt || '') > (cur.lastAt || ''))) cur.summary = contentFirst
+            cur.records.push({ rel, turnCount: turns, title: o.title || '', at: o.updatedAt || o.createdAt || '' })
+            const gCreated = parseIso(o.createdAt || '')
+            const gUpdated = parseIso(o.updatedAt || '') || gCreated
+            if (gCreated && (!gMin || gCreated < gMin)) gMin = gCreated
+            if (gUpdated && gUpdated > gMax) gMax = gUpdated
+          } else {
+            // 散事件：按文件名计数 1 轮，时间用文件 mtime 近似（内容在轮次视图按需加载）
+            cur.turns += 1
+            const mtime = new Date(f.mtimeMs || 0).toISOString()
+            if (!cur.lastAt || mtime > cur.lastAt) cur.lastAt = mtime
+            if (!cur.firstAt || mtime < cur.firstAt) cur.firstAt = mtime
           }
-          ats.push(o.updatedAt || o.createdAt || '')
-          for (const a of ats) {
-            if (!a) continue
-            if (!cur.firstAt || a < cur.firstAt) cur.firstAt = a
-            if (!cur.lastAt || a > cur.lastAt) cur.lastAt = a
-          }
-          // 摘要副标题：最新聚合文件 content 首行（回忆"这个会话在做什么"）
-          const contentFirst = String(o.content || '').split('\n')[0].slice(0, 80)
-          if (contentFirst && (!cur.summary || (o.updatedAt || '') > (cur.lastAt || ''))) cur.summary = contentFirst
-          cur.records.push({ rel, turnCount: turns, title: o.title || '', at: o.updatedAt || o.createdAt || '' })
           map.set(sid, cur)
         }
         const items = [...map.values()].sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || ''))
