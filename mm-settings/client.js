@@ -247,6 +247,18 @@ window.__ModuleLoader__.load({
       }
       var ms = modelsOf(dispP)
       var modelDisabled = !dispP || !ms.length
+      // 自动回写：provider 已选、model 为空、该 provider 有模型 → 自动补第一个模型并写回 state。
+      // 修复断链：此前"自动选中"仅作用于显示层（value.model || ms[0]），从不写回 state，
+      // 而自动保存把空 model 视为"清除"（applySubModel delete m.model）→ 配置永远缺 model →
+      // resolveModelConfig 回落全局（亦空）→ 无模型模式，模型总结失败/不调模型。
+      // 补写后随自动保存（scheduleSave 800ms 防抖）落盘。
+      React.useEffect(function () {
+        var p = value && value.provider
+        if (p && p !== '__none__' && !(value && value.model) && !modelDisabled && ms.length) {
+          setF('model', ms[0])
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [value.provider])
       return React.createElement('div', { style: { flex: 1, minWidth: 0 } },
         React.createElement('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
           React.createElement('select', {

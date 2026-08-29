@@ -9,6 +9,7 @@
  *   hasTrackSummary, trackCfg, runTurnSummaryTask, readStepRange, stepsToText }。
  */
 
+import { existsSync, readFileSync } from 'node:fs'
 import { estimateTokens, batchDigest, blockBudget, chunkItemsByBudget, splitItemBySentences, mergeTailSmallChunk } from './chunker.mjs'
 import { newKeywordObj, sanitizeFile, eventFileName, histEntry } from './memory-objects.mjs'
 import { uid, nowIso, ymPath } from './time-utils.mjs'
@@ -348,7 +349,9 @@ export function createAdmin(core, deps) {
       const budget = Math.floor(baseBudget * ratios[i])
       if (promptTokens + outCap > budget) {
         attempt = i + 1
-        lastErr = '上下文预算不足：输入约 ' + promptTokens + ' tokens，预算 ' + budget + '（' + (pct * ratios[i]).toFixed(0) + '%）'
+        // 预算不足不覆盖已有真实错误：此前 continue 会把 i=0/i=1 的真实调用失败
+        // 覆盖成"上下文预算不足"，导致排障时看不到模型真实报错（如空输出/超时/HTTP 错误）。
+        if (!lastErr) lastErr = '上下文预算不足：输入约 ' + promptTokens + ' tokens，预算 ' + budget + '（' + (pct * ratios[i]).toFixed(0) + '%）'
         continue
       }
       try {
