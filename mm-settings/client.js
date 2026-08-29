@@ -1046,6 +1046,8 @@ function MemoryView(props) {
   var scrollPos = React.useState({})
   var scrollPosV = scrollPos[0]
   var setScrollPos = scrollPos[1]
+  // 滚动容器 ref：切页签/进出会话时滚回顶部（跨页签恢复上次滚动位置会造成"新内容从底部出现"）
+  var scrollBoxRef = React.useRef(null)
   // 页面内确认浮层（替代 window.confirm：嵌入环境可能被拦截导致点击无反应）
   var confirmS = React.useState(null)
   var confirmState = confirmS[0]
@@ -1491,6 +1493,11 @@ function MemoryView(props) {
   React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [tabV])
   // 会话/范围/焦点变化：数据源变了，强制重新查询
   React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [sessionId, scopeAllV, timeFromV, timeToV, searchArchV, focusSidV, editState])
+  // 切页签/进出会话：滚动回顶部并清空跨页签滚动记忆（避免恢复上次底部位置，新内容从下方出现）
+  React.useEffect(function () {
+    setScrollPos({})
+    if (scrollBoxRef.current) scrollBoxRef.current.scrollTop = 0
+  }, [tabV, focusSidV])
   // 加载配置（轮次页展示触发间隔等）
   React.useEffect(function () {
     callHost('config').then(function (r) {
@@ -2368,7 +2375,7 @@ function MemoryView(props) {
       React.createElement('div', {
         // 底部留空：DSH 聊天输入框（composer seat）会覆盖 overlay 底部一截，内容区加 paddingBottom 避免信息被遮挡
         style: { flex: 1, overflowY: 'auto', paddingBottom: 90 },
-        ref: function (el) { if (el && scrollPosV[tabV] && el.scrollTop !== scrollPosV[tabV]) { el.scrollTop = scrollPosV[tabV] } },
+        ref: scrollBoxRef,
         onScroll: function (e) { var st = e.target.scrollTop; var m = Object.assign({}, scrollPosV); m[tabV] = st; setScrollPos(m) },
       }, body),
       msgV ? React.createElement('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, msgV) : null,
