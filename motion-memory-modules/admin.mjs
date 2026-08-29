@@ -37,6 +37,19 @@ export function createAdmin(core, deps) {
   // admin 顶层参数(contextTokens/summaryPercent/outputTokens/concurrency/extraJson)
   // 构成「默认实例」；子功能（track/enhance/period）的 model 是子实例：
   // 字段未定义 → 继承全局；已定义 → 覆盖（extraJson/concurrency 激活即整体覆盖）。
+  // 读取 DSH 默认模型（settings.yaml agent-default-model）——作为"显式配了 provider 但 model 缺失"时的兜底
+  function defaultModelOf() {
+    try {
+      const home = dshHome()
+      if (!home) return { provider: '', model: '' }
+      const f = p(home, 'settings.yaml')
+      if (!existsSync(f)) return { provider: '', model: '' }
+      const text = readFileSync(f, 'utf8')
+      const pm = text.match(/agent-default-model:[\s\S]*?provider:\s*([^\s,]+)[\s\S]*?model:\s*([^\s,]+)/)
+      if (pm) return { provider: String(pm[1]).replace(/['"]/g, ''), model: String(pm[2]).replace(/['"]/g, '') }
+    } catch (e) {}
+    return { provider: '', model: '' }
+  }
   function resolveModelConfig(sub) {
     const g = adminCfg()
     const gModel = g.model || {}
@@ -52,9 +65,18 @@ export function createAdmin(core, deps) {
       if (typeof v === 'string') { try { v = JSON.parse(v) } catch (e) { return undefined } }
       return (v && typeof v === 'object') ? v : undefined
     }
+    const dm = defaultModelOf()
+    // provider/model 解析：子实例显式 → 继承全局 → 兜底 DSH 默认（仅当"显式想要模型"但配置不完整时）
+    let provider = (s.provider === '__none__') ? '' : ((s.provider !== undefined && s.provider !== '') ? String(s.provider) : (gModel.provider || ''))
+    let model = (s.provider === '__none__') ? '' : ((s.model !== undefined && s.model !== '') ? String(s.model) : (gModel.model || ''))
+    const wantModel = (s.provider !== undefined && s.provider !== '' && s.provider !== '__none__')
+    if (wantModel && (!provider || !model) && (!gModel.provider || !gModel.model)) {
+      provider = dm.provider
+      model = dm.model
+    }
     return {
-      provider: (s.provider === '__none__') ? '' : ((s.provider !== undefined && s.provider !== '') ? String(s.provider) : (gModel.provider || '')),
-      model: (s.provider === '__none__') ? '' : ((s.model !== undefined && s.model !== '') ? String(s.model) : (gModel.model || '')),
+      provider,
+      model,
       contextTokens: pick('contextTokens', Number),
       summaryPercent: pick('summaryPercent', Number),
       outputTokens: pick('outputTokens', Number),

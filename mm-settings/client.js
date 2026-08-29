@@ -2353,7 +2353,8 @@ function MemoryView(props) {
       ),
       timeBar,
       React.createElement('div', {
-        style: { flex: 1, overflowY: 'auto' },
+        // 底部留空：DSH 聊天输入框（composer seat）会覆盖 overlay 底部一截，内容区加 paddingBottom 避免信息被遮挡
+        style: { flex: 1, overflowY: 'auto', paddingBottom: 90 },
         ref: function (el) { if (el && scrollPosV[tabV] && el.scrollTop !== scrollPosV[tabV]) { el.scrollTop = scrollPosV[tabV] } },
         onScroll: function (e) { var st = e.target.scrollTop; var m = Object.assign({}, scrollPosV); m[tabV] = st; setScrollPos(m) },
       }, body),
