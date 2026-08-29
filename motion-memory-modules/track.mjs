@@ -205,8 +205,9 @@ export function createTrack(core, deps) {
   }
   async function runTurnSummary(sid, turn, meta) {
     const tc = trackCfg()
-    if (!tc.enabled) return { ok: false, text: '对话跟踪未启用' }
+    // 界面手动"重新总结"（force）不受对话跟踪开关限制：手动触发直接执行
     const force = !!(meta && meta.force)
+    if (!tc.enabled && !force) return { ok: false, text: '对话跟踪未启用' }
     // 起始轮次/触发间隔按该会话持久化基准判断（记录在会话聚合文件 trackMeta，配置变化会追加新条）
     const basis = await readTurnTrackBasis(sid)
     if (basis.startTurn > 0 && turn < basis.startTurn && !force) {
