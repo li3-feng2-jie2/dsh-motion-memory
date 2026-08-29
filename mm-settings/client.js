@@ -158,6 +158,7 @@ window.__ModuleLoader__.load({
         React.createElement('select', {
           style: Object.assign({}, inputStyle, { width: '46%' }),
           value: dispP,
+          onFocus: function () { if (typeof expandModels === 'function') expandModels() },  // 懒加载完整模型列表
           onChange: function (e) {
             var p = e.target.value
             var m = modelsOf(p)
@@ -251,6 +252,7 @@ window.__ModuleLoader__.load({
           React.createElement('select', {
             style: Object.assign({}, inputStyle, { width: '46%' }),
             value: dispP,
+            onFocus: function () { if (typeof expandModels === 'function') expandModels() },  // 懒加载完整模型列表
             onChange: function (e) {
               var p = e.target.value
               var m = modelsOf(p)
@@ -415,10 +417,10 @@ window.__ModuleLoader__.load({
       }
 
       var refresh = React.useCallback(function () {
-        return Promise.all([
+        // 设置页主体立即加载（config 等轻量 RPC）；stats 统计后台计算，完成后单独更新统计区块
+        Promise.all([
           callHost('config', {}),
           callHost('incidents', {}),
-          callHost('stats', {}),
           callHost('diag', {}),
           callHost('models', {}),
           callHost('mm-update-check', {}),
@@ -426,12 +428,16 @@ window.__ModuleLoader__.load({
         ]).then(function (rs) {
           setCfg(rs[0].config || null)
           setIncidents((rs[1].incidents) || [])
-          setStats(rs[2])
-          setDiag(rs[3])
-          setProviders(rs[4].providers || [])
-          setUpdateInfo(rs[5] || { text: '（版本信息不可用）' })
-          setIsoAgentsList((rs[6] && rs[6].items) || [])
+          setDiag(rs[2])
+          setProviders(rs[3].providers || [])
+          setUpdateInfo(rs[4] || { text: '（版本信息不可用）' })
+          setIsoAgentsList((rs[5] && rs[5].items) || [])
         }).catch(function (e) { setMsg('读取失败: ' + String((e && e.message) || e)) })
+        callHost('stats', {}).then(function (r) { setStats(r) }).catch(function () {})
+      }, [])
+      // 模型列表懒加载：仅当用户展开模型选择（provider 下拉聚焦）时才完整探测各 provider 模型
+      var expandModels = React.useCallback(function () {
+        callHost('models', { expand: true }).then(function (r) { setProviders(r.providers || []) }).catch(function () {})
       }, [])
       React.useEffect(function () { refresh() }, [refresh])
 

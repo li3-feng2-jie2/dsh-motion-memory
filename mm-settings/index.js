@@ -819,9 +819,14 @@ export function apply(ctx) {
       }
       case 'models': {
         // 探测 DSH 可用模型：settings 服务 + llm 目录（供界面提供模型选择）
-        // 5 分钟内存缓存：llm.listModels 探测可能很慢，设置页每次打开都会调用；config-set 时失效
+        // 快路径（默认）：只读激活/默认模型，不逐个 listModels 探测（设置页打开即快）；
+        // expand=true（模型下拉展开时懒加载）：完整探测每个 provider 的模型列表。
+        // 缓存：快路径 5 分钟；完整探测 30 分钟；config-set 时失效。
+        const expand = !!(payload && payload.expand)
         const mNow = Date.now()
-        if (state.modelsCache && mNow - state.modelsCache.at < 300000) return { ok: true, ...state.modelsCache.data }
+        const mKey = expand ? 'models-full' : 'models'
+        const mTtl = expand ? 1800000 : 300000
+        if (state.modelsCache && state.modelsCache[mKey] && mNow - state.modelsCache[mKey].at < mTtl) return { ok: true, ...state.modelsCache[mKey].data }
         const out = { providers: [], defaultModel: null, current: null }
         let defaultProvider = ''
         let defaultModel = ''
@@ -858,11 +863,14 @@ export function apply(ctx) {
               if (!provider || seen.has(provider)) continue
               seen.add(provider)
               let models = []
-              try {
-                const ms = llmSvc.listModels ? await llmSvc.listModels(provider) : []
-                models = Array.isArray(ms) ? ms.map(m => (typeof m === 'string' ? m : (m && (m.model || m.id || m.name)))).filter(Boolean) : []
-              } catch (e) {}
-              // 若目录 provider 无模型且是当前默认 → 用 settings 的默认模型兜底
+              if (expand) {
+                // 完整探测（懒加载）：仅模型选择展开时执行
+                try {
+                  const ms = llmSvc.listModels ? await llmSvc.listModels(provider) : []
+                  models = Array.isArray(ms) ? ms.map(m => (typeof m === 'string' ? m : (m && (m.model || m.id || m.name)))).filter(Boolean) : []
+                } catch (e) {}
+              }
+              // 快路径或探测为空且是当前默认 → 用 settings 的默认模型兜底
               if (!models.length && provider === defaultProvider && defaultModel) models = [defaultModel]
               out.providers.push({
                 provider,
@@ -885,7 +893,8 @@ export function apply(ctx) {
             })
           }
         } catch (e) { out.llmErr = String(e) }
-        state.modelsCache = { at: Date.now(), data: out }
+        state.modelsCache = state.modelsCache || {}
+        state.modelsCache[mKey] = { at: Date.now(), data: out }
         return { ok: true, ...out }
       }
       case 'period-run': {
