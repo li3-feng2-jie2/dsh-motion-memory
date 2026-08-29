@@ -882,7 +882,6 @@ export function apply(ctx) {
                   const ms = llmSvc.listModels ? await llmSvc.listModels(provider) : []
                   models = Array.isArray(ms) ? ms.map(m => (typeof m === 'string' ? m : (m && (m.model || m.id || m.name)))).filter(Boolean) : []
                 } catch (e) {}
-                }
               }
               // 快路径或探测为空且是当前默认 → 用 settings 的默认模型兜底
               if (!models.length && provider === defaultProvider && defaultModel) models = [defaultModel]
