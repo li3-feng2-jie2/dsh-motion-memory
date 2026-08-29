@@ -756,10 +756,16 @@ export function apply(ctx) {
         const nd = new Date()
         const todayStr = nd.getFullYear() + '/' + pad(nd.getMonth() + 1) + '/' + pad(nd.getDate())
         const cutoff = Date.now() - days * 86400000
+        // 指纹缓存：统计需全量扫描记忆累积，文件无变动则直接返回（避免每次打开设置页全量 readJson）
+        const base = p(r, '记忆累积')
+        const files = await listFiles(base, true)
+        const fp = files.map(f => f.name + ':' + (f.mtimeMs || 0) + ':' + (f.size || 0)).join('|')
+        const scache = state.mmCache && state.mmCache['stats-fp']
+        if (scache && scache.fp === fp) return { ok: true, ...scache.data }
         let important = 0, archive = 0, period = 0, events = 0, noModel = 0
         let todayImportant = 0, todayEvents = 0
         let withinImportant = 0, withinPeriod = 0, withinEvents = 0
-        for (const f of await listFiles(p(r, '记忆累积'), true)) {
+        for (const f of files) {
           const rel = relOf(f.path, r)
           const o = await readJson(f.path)
           if (!o || isTombstone(o)) continue
@@ -781,12 +787,15 @@ export function apply(ctx) {
             events++; if (isToday) todayEvents++; if (last > cutoff) withinEvents++
           }
         }
-        return {
+        const data = {
           ok: true, root: r, cfgPath: cfgPath(), sessionCwd: wsRoot(), days,
           important, archive, period, events, noModel,
           today: { important: todayImportant, events: todayEvents },
           within: { important: withinImportant, period: withinPeriod, events: withinEvents },
         }
+        state.mmCache = state.mmCache || {}
+        state.mmCache['stats-fp'] = { at: Date.now(), fp, data }
+        return { ok: true, ...data }
       }
       case 'diag': {
         const c = await readCfg()
