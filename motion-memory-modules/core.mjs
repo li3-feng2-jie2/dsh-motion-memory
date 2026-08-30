@@ -383,14 +383,32 @@ export function createCore(ctx) {
     const preset = sessionPresetOf(agentOrSession)
     return preset ? 'preset:' + preset : ''
   }
-  // 异步版：优先 sessions 服务 header（新版 DSH header 事件自带 agentPreset，
-  // 内存读取零解压）；header 缺失时才读会话日志找 agent-preset/selected
-  // （兼容旧版日志布局 / live 会话 header 未落盘的兜底）。
+  // 异步版：权威语义 =「header 初始值」+「其后最后一次 agent-preset/selected 选择事件」
+  // （与 DSH 0.1.2 agentPreset 投影一致，网页头部徽标同源）。创建后改预设的会话 header
+  // 不可变仍是旧值、首帧记录也只是 init——选择事件必须优先于 init。
+  // live 会话直接扫内存事件（零 IO，与投影折叠同一份数据）；非 live 会话用便宜的限帧扫描。
   async function sessionPresetOfAsync(sid) {
     // sid 归一化：DSH 会话 id / 日志目录名约定带 session- 前缀；
     // 会话记忆列表派生的 sid 可能不带前缀（文件名 slice 掉前缀），不归一化则日志路径查找全部落空
     if (sid && sid.indexOf('session-') !== 0) sid = 'session-' + sid
-    // ① header 快路径：DSH sessions 服务内存对象，不含文件 IO
+    // ① live 会话内存事件（零 IO）：取最后一个 agent-preset/selected（最新一次选择为准）
+    try {
+      const sessions = ctx.get('sessions')
+      if (sessions && sid) {
+        const s = sessions.get(sid)
+        if (s && Array.isArray(s.events) && s.events.length) {
+          let sel = ''
+          for (const e of s.events) {
+            if (e && e.type === 'agent-preset/selected') {
+              const v = (e.data && e.data.agentPreset) || e.agentPreset
+              if (v) sel = String(v)
+            }
+          }
+          if (sel) return sel
+        }
+      }
+    } catch (e) {}
+    // ② header 快路径（init 值）：DSH sessions 服务内存对象，不含文件 IO
     try {
       const sessions = ctx.get('sessions')
       if (sessions && sid) {
@@ -401,24 +419,27 @@ export function createCore(ctx) {
         }
       }
     } catch (e) {}
-    // ③ 日志首帧 session 事件（DSH 0.1.2+ 日志格式）：preset 在 session 事件顶层 agentPreset 字段，
-    // 该版本不再产生 agent-preset/selected 事件（实测 0.1.2+ 日志 11396 帧中 0 次出现）。
-    // 只解第 1 帧，比 ② 的 30 帧更省；无顶层 agentPreset（旧日志）则落到 ②。
+    // ③ 日志选择事件扫描（非 live 会话；限前 30 帧，实测改预设事件都在第 2~3 帧）。
+    // 必须先于首帧 init 记录——旧版顺序（先首帧后扫描）导致选择事件被 init 值遮蔽，是"固定显示旧预设"的根因
+    try {
+      const events = await (_readerFirstFrames ? _readerFirstFrames(sid, 30) : [])
+      if (Array.isArray(events) && events.length) {
+        let sel = ''
+        for (const e of events) {
+          if (e && e.type === 'agent-preset/selected') {
+            const v = (e.data && e.data.agentPreset) || e.agentPreset
+            if (v) sel = String(v)   // 取最后一个
+          }
+        }
+        if (sel) return sel
+      }
+    } catch (e) {}
+    // ④ 日志首帧 session 事件（init 值；DSH 0.1.2+ 日志格式，非 live 会话的 header 记录）
     try {
       const first = await (_readerFirstFrames ? _readerFirstFrames(sid, 1) : [])
       if (Array.isArray(first)) {
         for (const e of first) {
           if (e && e.type === 'session' && e.agentPreset) return String(e.agentPreset)
-        }
-      }
-    } catch (e) {}
-    // ② 日志兜底：仅 header/首帧拿不到 preset 时读日志（限前 30 帧，避免全量解压；
-    // 兼容旧版日志布局——agent-preset/selected 事件）
-    try {
-      const events = await (_readerFirstFrames ? _readerFirstFrames(sid, 30) : [])
-      if (Array.isArray(events) && events.length) {
-        for (const e of events) {
-          if (e && e.type === 'agent-preset/selected' && e.data && e.data.agentPreset) return String(e.data.agentPreset)
         }
       }
     } catch (e) {}

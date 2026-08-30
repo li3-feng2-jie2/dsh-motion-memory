@@ -1475,7 +1475,7 @@ function MemoryView(props) {
         })
       }
     }
-    if (t === 'active') p = callHost('mm-active-read', { session: sessionId || '', agent: activeAgentV || undefined }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setActive((r && r.data) || null) })
+    if (t === 'active') p = callHost('mm-active-read', { session: sessionId || '', agent: (opts && opts.agent !== undefined) ? opts.agent : (activeAgentV || undefined) }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setActive((r && r.data) || null) })
     if (t === 'periods') p = callHost('period-history', { from: fMs || 0, to: tMs || 0 }).then(function (r) {
       if (mySeq !== reqSeqRef.current) return
       var items = (r && r.items) || []
@@ -1546,6 +1546,15 @@ function MemoryView(props) {
   // 会话/范围/焦点变化：数据源变了，强制重新查询（新会话/新筛选 = 全新数据，版本重置）
   React.useEffect(function () { dataVersionRef.current = 0 }, [sessionId])
   React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [sessionId, scopeAllV, timeFromV, timeToV, searchArchV, focusSidV, editState])
+  // 会话切换（窗口换会话）：活跃记忆页「智能体活跃」默认跟随当前窗口会话——
+  // 重置手动选择的智能体并强制按新会话重查。放在上面的强制刷新 effect 之后声明，
+  // 查询序号递增会覆盖旧会话的查询结果（避免 L1548 用旧 activeAgentV 抢答）
+  React.useEffect(function () {
+    if (!sessionId) return
+    setActiveAgent('')
+    refreshTab('active', true, { agent: '' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
   // 切页签/进出会话：滚动回顶部并清空跨页签滚动记忆（避免恢复上次底部位置，新内容从下方出现）
   React.useEffect(function () {
     setScrollPos({})
@@ -2125,9 +2134,10 @@ function MemoryView(props) {
       // 智能体单选：默认当前会话智能体（标"当前"）；切换后只显示该智能体的活跃记忆
       React.createElement('div', { style: { fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
         React.createElement('span', {}, '智能体活跃：'),
-        React.createElement('select', { style: Object.assign({}, inputStyle, { width: 220 }), value: activeAgentV || '', onChange: function (e) { setActiveAgent(e.target.value); refreshTab('active', true) } },
-          React.createElement('option', { value: '' }, agentLabel(curAgentV || 'preset:cordis') + '（当前）'),
-          agentsV.map(function (a) { return React.createElement('option', { key: a.key, value: a.key }, (a.label || a.key) + (a.key === curAgentV ? '（当前）' : '')) }),
+        React.createElement('select', { style: Object.assign({}, inputStyle, { width: 260 }), value: (activeAgentV && activeAgentV !== curAgentV) ? activeAgentV : '', title: '默认=跟随当前窗口会话；选其他=只看该智能体活跃记忆', onChange: function (e) { setActiveAgent(e.target.value); refreshTab('active', true) } },
+          React.createElement('option', { value: '' }, '跟随当前会话（' + agentLabel(curAgentV || 'preset:cordis') + '）'),
+          // 当前智能体已由默认项「跟随当前会话（X）」表示，列表不再重复显示
+          agentsV.filter(function (a) { return !curAgentV || a.key !== curAgentV }).map(function (a) { return React.createElement('option', { key: a.key, value: a.key }, a.label || a.key) }),
         ),
         React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 } }, activeV.agent || ''),
       ),

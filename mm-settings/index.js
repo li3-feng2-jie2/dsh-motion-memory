@@ -651,6 +651,14 @@ export function apply(ctx) {
   }
 
   async function handle(endpoint, payload) {
+    // lastSid 兜底来源（DSH 0.1.2 兼容）：agent/request 与 session/event 在 0.1.2+ 是
+    // 作用域过滤事件（@deepseek-ai/dsh-scope，仅 agent 作用域 ctx 收得到），web 插件根 ctx
+    // 收不到 → lastSid 恒空。改从每次 /mmsettings 请求学习：客户端请求恒带窗口会话 id，
+    // payload.session 即最近查看/操作的会话，作为空 sessionId 请求的兜底
+    try {
+      const ps = payload && payload.session
+      if (ps) state.lastSid = String(ps)
+    } catch (e) {}
     switch (endpoint) {
       case 'config': {
         const c = await readCfg()
