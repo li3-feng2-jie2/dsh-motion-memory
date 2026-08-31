@@ -21,6 +21,7 @@ export function createQuery(core, deps) {
     necessaryDir, importantDir, archiveBaseDir, dailyBaseDir, noModelDir, periodBaseDir,
     queryOwnerOf, findImportant, findKeyword, findArchive, scopeOwner,
     scanDir, lastOpTime, pageSlice, isoStr, ownerOf, ownerKeyOfAsync,
+    presetOwnerLabel,
   } = core
   const {
     resolveModelConfig, expandLinks, readTurnUserTextRetry, readAgentActive,
@@ -87,8 +88,8 @@ export function createQuery(core, deps) {
     if (args.agents) {
       const own = queryOwnerOf(meta, args)
       const stat = {}
-      const touch = (key) => { key = String(key || ''); if (!key) key = '（无归属）'; if (!stat[key]) stat[key] = { important: 0, events: 0, period: 0, recent: [] } }
-      const push = (key, kind, title) => { touch(key); stat[key][kind]++; if (stat[key].recent.length < 3) stat[key].recent.push(String(title || '')) }
+      const touch = (key) => { key = String(key || ''); if (!key) key = '（无归属）'; if (!stat[key]) stat[key] = { important: 0, events: 0, period: 0, recent: [] }; return key }
+      const push = (key, kind, title) => { key = touch(key); stat[key][kind]++; if (stat[key].recent.length < 3) stat[key].recent.push(String(title || '')) }
       const inScope = (ow) => !own || ow === own
       for (const f of await listFiles(importantDir(), false)) {
         const o = await readJson(f.path)
@@ -119,9 +120,10 @@ export function createQuery(core, deps) {
       const lines = ['【智能体记忆概览】' + (own ? '（范围：' + own + '）' : '（全部）')]
       for (const k of keys) {
         const s = stat[k]
-        lines.push('· ' + k + '：重要 ' + s.important + ' · 事件 ' + s.events + ' · 周期 ' + s.period + (s.recent.length ? ' · 最近：' + s.recent.join('；') : ''))
+        const label = await presetOwnerLabel(k)
+        lines.push('· ' + label + '：重要 ' + s.important + ' · 事件 ' + s.events + ' · 周期 ' + s.period + (s.recent.length ? ' · 最近：' + s.recent.join('；') : ''))
       }
-      lines.push('（可用 memory_query ownerKey=preset:xxx keyword=词 / open=标题 定向查询；ownerKey=all 查询所有智能体）')
+      lines.push('（跨智能体查询：用 ownerKey=preset:xxx（id，显示名见上）配合 keyword=词 / open=标题 / recent=n 定向查询该智能体的关键词、周期、事件记忆；ownerKey=all 查询所有智能体）')
       await logQuery(meta.session, '智能体记忆概览', null)
       return { ok: true, text: lines.join('\n'), data: { agents: keys } }
     }
@@ -220,10 +222,12 @@ export function createQuery(core, deps) {
         if (ev.length) lines.push('事件：' + ev.map(r => r.title).join('、'))
       }
       if ((idx.agents || []).length) {
-        lines.push('智能体：' + idx.agents.slice(0, 5).map(a => {
+        const agentLabels = []
+        for (const a of idx.agents.slice(0, 5)) {
           const isSelf = a.agent === myOwnerKey
-          return a.agent + (isSelf ? '（本智能体）' : '') + (a.summary ? '：' + a.summary.slice(0, 40) : '')
-        }).join('；'))
+          agentLabels.push(await presetOwnerLabel(a.agent) + (isSelf ? '（本智能体）' : '') + (a.summary ? '：' + a.summary.slice(0, 40) : ''))
+        }
+        lines.push('智能体：' + agentLabels.join('；'))
       }
       parts.push(lines.join('\n'))
     } else {

@@ -1034,7 +1034,7 @@ export function apply(ctx) {
   //      → 有模型则总结合并输出；无模型原样返回；模型报错正常返回+报错信息
   // 1. 查询（普通查询 = 纯文件读取：活跃 + 必要 + 重要/周期关键词 + 最近事件。不调模型）
   // 深度增强（调模型整合）仅 enhance=true 时触发，默认关
-  tool('memory_query', '运动记忆·查询/回忆：开工总览（默认：必要+当前活跃+索引+最近事件）；keyword=匹配记忆标题列表；open=阅读指定标题（关联展开+历史记录）；openTurn=读会话轮次原文（会话id@轮次[:step]）；recent=最近事件条数；enhance=true 深度增强。纯文件读取不调模型（enhance 除外）。', {
+  tool('memory_query', '运动记忆·查询/回忆：开工总览（默认：必要+当前活跃+索引+最近事件）；keyword=匹配记忆标题列表；open=阅读指定标题（关联展开+历史记录）；openTurn=读会话轮次原文（会话id@轮次[:step]）；recent=最近事件条数；enhance=true 深度增强。跨智能体查询流程：① 先 agents=true 列出所有可用智能体概览（显示 id+DSH 显示名，如 preset:cordis（创造模式），及各自重要/事件/周期记忆量）→ ② 再 ownerKey=preset:xxx（概览中的 id）配合 keyword=词 / open=标题 / recent=n 定向查询该智能体的关键词、周期、事件记忆文件；ownerKey=all 查询所有智能体。纯文件读取不调模型（enhance 除外）。', {
     keyword: { type: 'string', description: '匹配词：列出重要/周期记忆标题中包含该词（或内容包含）的条目' },
     open: { type: 'string', description: '阅读指定标题的记忆文件（展开关联+历史记录）' },
     openTurn: { type: 'string', description: '读对话轮次原文，格式 会话id@轮次[:stepN]' },
@@ -1043,8 +1043,8 @@ export function apply(ctx) {
     queryHistory: { type: 'integer', description: 'open 时附带的查询记录条数；-1=5，>=0 用该值，缺省按配置（0=不附带）' },
     updateHistory: { type: 'integer', description: 'open 时附带的增量更新记录条数；-1=5，>=0 用该值，缺省按配置（0=不附带）' },
     expandDepth: { type: 'integer', description: 'open 时关联展开层数：-1=按配置，0=不展开，n=n 层' },
-    ownerKey: { type: 'string', description: '查询智能体范围：空=本智能体；preset:xxx=指定智能体；all=所有智能体' },
-    agents: { type: 'boolean', description: 'true 时列出智能体记忆概览（有哪些智能体、各自记忆量），不执行普通查询' },
+    ownerKey: { type: 'string', description: '查询智能体范围：空=本智能体；preset:xxx=指定智能体（id 见 agents=true 概览，显示名如 preset:cordis（创造模式））；all=所有智能体' },
+    agents: { type: 'boolean', description: 'true 时列出智能体记忆概览（有哪些智能体 id+显示名、各自记忆量，跨智能体查询第一步），不执行普通查询' },
   }, [], memCmdQuery)
   // 5. 记忆写入（统一入口）：kind=keyword 重要关键词（同名返回已有）；necessary 必要记忆；event 事件；update 更新；forget 遗忘
   tool('memory_add', '运动记忆·写入：kind=keyword（默认）创建重要关键词记忆——先查同名与近似标题：精确同名返回已有内容（同一实体信息变化→kind=update 更新；不同实体→用更具体标题新建并自动关联既有记忆），近似候选一并列出供判断消歧；kind=necessary 写入本智能体必要记忆（agent.md 语义，写入当前活跃 custom，随总览注入）；kind=event 创建事件记忆（日期目录，直接写入；带会话@轮次自动并入会话聚合记忆）；kind=update 更新已有关键词记忆（diff+mergeDated 自动合并时间变体+forgetIndexes）；kind=edit 按用户明确确认修改任意记忆文件（默认只读保护，必须 force=true）；kind=forget 主动遗忘移入补充；kind=reattach 模型通过上下文判断后挂回/晋升（补充区记忆与会话工作强相关时：挂回当前活跃或移动回重要，触发当前活跃启用得分）。规则：①重要内容先落关键词（kind=keyword），默认自动挂载到当前活跃 keywords 成为指针（方便其他窗口按指针查询），无无缘无故的指向——引用必须真实溯源；②创建/更新关键词时同步维护当前活跃 keywords：对照近期会话工作（works）主题，移除与当前会话无关的过时词，保持关键词与近期工作相关有效（移除时说明理由）；③关键词数量不设硬上限，靠相关性维护约束。', {

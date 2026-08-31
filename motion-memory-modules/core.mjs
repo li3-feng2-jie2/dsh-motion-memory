@@ -712,6 +712,37 @@ export function createCore(ctx) {
     return ''
   }
 
+  // ── preset 显示名映射（id → DSH 用户显示名，跨智能体查询用）──────────
+  // 来源：DSH agentPresets 服务 list()（含内置 cordis/standard 与用户自定义 preset）；
+  // 拿不到服务/列表时降级为只显示 ownerKey（id）。
+  let _presetNameCache = null
+  async function presetDisplayName(id) {
+    const cid = String(id || '').trim()
+    if (!cid) return ''
+    if (!_presetNameCache) {
+      _presetNameCache = new Map()
+      try {
+        const ap = ctx.get('agentPresets')
+        if (ap && typeof ap.list === 'function') {
+          const list = await ap.list()
+          for (const p of list || []) {
+            if (p && p.id) _presetNameCache.set(String(p.id), p.name || '')
+          }
+        }
+      } catch (e) {}
+    }
+    return _presetNameCache.get(cid) || ''
+  }
+  // ownerKey → 可读标签：preset:xxx → "preset:xxx（显示名）"，非 preset 原样返回
+  async function presetOwnerLabel(ownerKey) {
+    const k = String(ownerKey || '')
+    if (k.indexOf('preset:') === 0) {
+      const name = await presetDisplayName(k.slice(7))
+      return name ? k + '（' + name + '）' : k
+    }
+    return k
+  }
+
   // ── 返回共享对象 ───────────────────────────────────────────────────────
   return {
     ctx, fs, tools, sandboxPolicy, llm, state,
@@ -733,6 +764,8 @@ export function createCore(ctx) {
     // 归属
     ownerOf, currentOwner, isAdminAgent, scopeOwner, queryOwnerOf,
     sessionPresetOf, ownerKeyOf, sessionPresetOfAsync, ownerKeyOfAsync, mergeLegacyOwners,
+    // preset 显示名（跨智能体查询）
+    presetDisplayName, presetOwnerLabel,
     // 查找
     scanDir, findInDir, findImportant, findArchive, findKeyword, titleWords,
     findSimilarTitles, searchTitles, lastOpTime, lastOp, isoStr, uniquePath, pageSlice,

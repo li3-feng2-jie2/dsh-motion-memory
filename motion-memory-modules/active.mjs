@@ -119,6 +119,7 @@ export function createActive(core, deps) {
     const oldSummary = act.summary || ''
     let summaryChanged = false
     let refChanged = false
+    let recordChanged = false
     if (extra) {
       if (extra.lastMemRef !== undefined && extra.lastMemRef !== act.lastMemRef) { act.lastMemRef = extra.lastMemRef; refChanged = true }
       if (extra.lastAction !== undefined && extra.lastAction !== act.lastAction) { act.lastAction = extra.lastAction; refChanged = true }
@@ -131,7 +132,6 @@ export function createActive(core, deps) {
         recordChanged = true
       }
     }
-    let recordChanged = false
     if (extra && extra.record && extra.record.text) {
       act.records = act.records || []
       const recKey = String(extra.record.key || '').trim()
