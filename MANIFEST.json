@@ -3,7 +3,7 @@
     "files": {
         "cordis.patch.yml": "sha256:fe1c1916f8dc00b657306c58eee14992648239c8929c3ebcdcd08681af6aee44",
         "LICENSE": "sha256:d31b7024c5dd054a289d0a7d8bf7c2ae2d6374f38b1c656ace03f864766f9061",
-        "mm-settings/client.js": "sha256:78f0b790b4aeac420c43acae4de4fb632ab53388a38d9055bd79f30738d47ad1",
+        "mm-settings/client.js": "sha256:9d256b39f6fbeae8c458cd2c195e2be57f8f547f06f4bf73408e95f4e41b0b38",
         "mm-settings/index.js": "sha256:f6a57367b0605e435b3f7df1f5d5dbf71083a9b8c72d58e8e117cca201b23afe",
         "mm-settings/package.json": "sha256:f11ce331c2e0614341abfe9efbd5ef1e2be53a945589cfe20f74ed663f908cbc",
         "motion-memory-modules/active.mjs": "sha256:789e8a4d65ce1798a10e009135ac3cfac27f286fe68b8bbad67ce59deff44bed",
@@ -26,7 +26,7 @@
         "motion-memory-modules/write.mjs": "sha256:1c65e7ed08b507043b0450d08c915dc281cad8ca16ace25b026a162796cbbbe7",
         "motion-memory.js": "sha256:77d93951c51af45fdd57b40746c9779e8f55cb0f8c7572595f2147d23bc4d6db",
         "package.json": "sha256:2bef12244415a0f58d3379ea8538522ca37d76502e021e548ad183649f26c395",
-        "README.md": "sha256:3f0e91a690b89994431b1a07f6943593a1a1af309651c824f3bc304658435a7b",
+        "README.md": "sha256:5c30a3eb41a19bc7a1421e3234722cd1041293ee737d76bff310ed2f8fa3712a",
         "SETTINGS.md": "sha256:17384773f0d15ca4d987dc78f85f1085aca7020883036181240f81adb7975d14"
     }
 }
