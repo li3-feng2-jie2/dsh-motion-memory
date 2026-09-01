@@ -1,5 +1,5 @@
 {
-    "version": "0.4.2",
+    "version": "0.4.3",
     "files": {
         "cordis.patch.yml": "sha256:fe1c1916f8dc00b657306c58eee14992648239c8929c3ebcdcd08681af6aee44",
         "LICENSE": "sha256:d31b7024c5dd054a289d0a7d8bf7c2ae2d6374f38b1c656ace03f864766f9061",
@@ -9,7 +9,7 @@
         "motion-memory-modules/active.mjs": "sha256:789e8a4d65ce1798a10e009135ac3cfac27f286fe68b8bbad67ce59deff44bed",
         "motion-memory-modules/admin.mjs": "sha256:bc13efc0d5b65cef9a50083f335e76bee369b0529b0b770a979f7b8c6757eb68",
         "motion-memory-modules/chunker.mjs": "sha256:e834518cd8590da71a4c078e0b119bc51955469a2b65a11212abac4f846f4104",
-        "motion-memory-modules/core.mjs": "sha256:f85ecb908e8c7e72a5c4ac4273bb1b6ebcdf8939c8594bfb68c1e800d1d11bb3",
+        "motion-memory-modules/core.mjs": "sha256:a3db7925717dabed6807e82d8fbd744c1848390cf7326377657beaaa976ac25e",
         "motion-memory-modules/event-text.mjs": "sha256:52a56ac2c48262b4a7560e445037f8d2083597f3694dac63d3ca8abfc27e9c3a",
         "motion-memory-modules/isolation.mjs": "sha256:5aad6092ce756c35f55bb99f7c6e19888d53f720d347aa09852c9fb61c8b07d6",
         "motion-memory-modules/mem-files.mjs": "sha256:beb181dcf8021145aa2944dab2ffc5fae4c535b6b048d7de6cd41690e2484c82",
@@ -22,10 +22,10 @@
         "motion-memory-modules/text-utils.mjs": "sha256:b79262d3723074edd0d06af4bb867dbda40bade155f4657e9ebca456f1536d45",
         "motion-memory-modules/time-utils.mjs": "sha256:90f459ed4b5bc87d6d81cf647e088212b00d743b984934ad4364a833f158f7cb",
         "motion-memory-modules/track.mjs": "sha256:d49181b9afb6b663396789674123b1e212b22ccbe09e1e120b41d92a6fbfe6f1",
-        "motion-memory-modules/update.mjs": "sha256:0043bb101a7ff89a19c5aafceb26d32f6a2dd99c99f5c5603600ac0bed5e1ca0",
+        "motion-memory-modules/update.mjs": "sha256:ba3bfa364a9b45e886cbbe733d19bc178a0421e84f2d417910f11e9a68466b91",
         "motion-memory-modules/write.mjs": "sha256:1c65e7ed08b507043b0450d08c915dc281cad8ca16ace25b026a162796cbbbe7",
         "motion-memory.js": "sha256:77d93951c51af45fdd57b40746c9779e8f55cb0f8c7572595f2147d23bc4d6db",
-        "package.json": "sha256:650f46cabef8f0714cf8715367a53d852dddaca8376d443face1b3633f62359d",
+        "package.json": "sha256:2bef12244415a0f58d3379ea8538522ca37d76502e021e548ad183649f26c395",
         "README.md": "sha256:3f0e91a690b89994431b1a07f6943593a1a1af309651c824f3bc304658435a7b",
         "SETTINGS.md": "sha256:17384773f0d15ca4d987dc78f85f1085aca7020883036181240f81adb7975d14"
     }
