@@ -1511,9 +1511,13 @@ function MemoryView(props) {
   function saveTurnEdit() {
     var es = editState
     if (!es) return
-    var savePayload = es.path && String(es.path).indexOf('__new_turn_') !== 0
-      ? { rel: es.path, content: es.value }
-      : { ref: (es.ref || (sessionId + '@' + (es.turn || 0))), content: es.value }
+    // v0.4.3：编辑已有轮次一律按 ref（会话@轮次）定位到聚合文件 turns[] 的对应轮次，
+    // 不再用 rel: path —— 同一聚合文件多个轮次 path 相同，rel 分支会把整个聚合 content 覆盖成单轮内容
+    var savePayload = es.ref
+      ? { ref: es.ref, content: es.value }
+      : (es.path && String(es.path).indexOf('__new_turn_') !== 0
+          ? { rel: es.path, content: es.value }
+          : { ref: (es.ref || (sessionId + '@' + (es.turn || 0))), content: es.value })
     setBusy(true)
     callHost('mm-turn-save', savePayload).then(function (r) {
       setMsg((r && r.text) || '已保存')
@@ -1886,14 +1890,17 @@ function MemoryView(props) {
     return [scopeBar].concat(rowEls).concat(footerEls)
   }
   // 单个已总结轮次条目渲染（renderTurns 内联拆分，供排序后渲染）
+  // 唯一 key = it.ref（会话@轮次）：同一聚合文件的多个轮次条目 path 相同，
+  // 若用 path 做展开/编辑 key 会"点开一个全部展开"（v0.4.3 修复）
+  function itemKey(it) { return (it && it.ref) || (it && it.path) || '' }
   function renderTurnItem(it) {
-    var isEditing = editState && editState.path === it.path
+    var isEditing = editState && editState.key === itemKey(it)
     var turnNo = (it.ref.match(/@(\d+)/) || [])[1] || it.ref
     var itemTime = (it.createdAt || '').slice(0, 16).replace('T', ' ')
     var btnRow = { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%', justifyContent: 'flex-end', marginTop: 4 }
           var noModel = !!it.noModel
           var rowStyle2 = noModel ? Object.assign({}, mmItem, { borderLeft: '3px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsw-alias-bg-layer-1)' }) : mmItem
-          return React.createElement('div', { key: it.path, style: rowStyle2 },
+          return React.createElement('div', { key: itemKey(it), style: rowStyle2 },
             React.createElement('div', { style: mmItemMeta },
               ['轮次 ' + turnNo
               + (noModel ? (it.fail ? ' ⚠ 无模型记忆（模型总结失败）' : ' ⚠ 无模型记忆') : '')
@@ -1910,17 +1917,17 @@ function MemoryView(props) {
               !isEditing
             ? (function () {
                 // 折叠显示：默认只显示摘要一行（首屏渲染量大减），点击展开全文（细节后加载）
-                var isOpen = !!expandedV[it.path]
+                var isOpen = !!expandedV[itemKey(it)]
                 var fullContent = String(it.content || '')
                 var preview = fullContent.replace(/\s+/g, ' ').slice(0, 80)
-                return React.createElement('div', { style: { cursor: 'pointer' }, onClick: function (e) { e.stopPropagation(); toggleExpanded(it.path) }, title: isOpen ? '收起' : '展开全文' },
+                return React.createElement('div', { style: { cursor: 'pointer' }, onClick: function (e) { e.stopPropagation(); toggleExpanded(itemKey(it)) }, title: isOpen ? '收起' : '展开全文' },
                   isOpen
                     ? React.createElement('div', { style: { whiteSpace: 'pre-wrap' } }, mdText(fullContent))
                     : React.createElement('div', { style: { color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap' } },
                         (preview || '（无内容）') + (fullContent.length > 80 ? '\n… 点击展开全文' : '')),
                 )
               })()
-            : autoTextArea(editState.value || '', function (e) { setEditState({ path: it.path, value: e.target.value }) }, null, null, saveTurnEdit),
+            : autoTextArea(editState.value || '', function (e) { setEditState({ key: itemKey(it), ref: it.ref, path: it.path, value: e.target.value }) }, null, null, saveTurnEdit),
           React.createElement('div', { style: btnRow },
             !isEditing
               ? React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
@@ -1942,7 +1949,7 @@ function MemoryView(props) {
                   React.createElement('button', { style: mmBtn, onClick: function () {
                       // 归档条目：点修改时时间范围联动到该归档月
                       if (it.archived && it.month) { setTimeFrom(it.month + '-01'); setTimeTo(it.month + '-31') }
-                      setEditState({ path: it.path, value: it.content || '' })
+                      setEditState({ key: itemKey(it), ref: it.ref, path: it.path, value: it.content || '' })
                     } }, '修改'),
                         noModel
                           ? React.createElement('button', { style: mmBtn, onClick: function () {
@@ -2317,11 +2324,11 @@ function MemoryView(props) {
           (focusTitle ? focusTitle + ' · ' : '') + '会话 ' + focusSidV + ' · ' + focusItems.length + ' 条轮次'),
       )
       return [head].concat(focusItems.length ? focusItems.map(function (it) {
-        var isEditing = editState && editState.path === it.path
+        var isEditing = editState && editState.key === itemKey(it)
         var turnNo = (it.ref.match(/@(\d+)/) || [])[1] || it.ref
         var itemTime = (it.createdAt || '').slice(0, 16).replace('T', ' ')
         var btnRow = { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', width: '100%', justifyContent: 'flex-end', marginTop: 4 }
-        return React.createElement('div', { key: it.path, style: mmItem },
+        return React.createElement('div', { key: itemKey(it), style: mmItem },
           React.createElement('div', { style: mmItemMeta },
             ['轮次 ' + turnNo + (it.noModel ? (it.fail ? '（模型总结失败）' : '（无模型记录）') : '') + (it.archived ? '（归档）' : '') + (itemTime ? '\n' + itemTime : '')]
             .concat(it.editHistory && it.editHistory.length ? [' · ',
@@ -2330,7 +2337,7 @@ function MemoryView(props) {
           React.createElement('div', { style: { flex: 1, minWidth: 200 } },
             !isEditing
               ? React.createElement('div', { style: { whiteSpace: 'pre-wrap' } }, mdText(it.content))
-              : autoTextArea(editState.value || '', function (e) { setEditState({ path: it.path, value: e.target.value }) }, null, null, saveTurnEdit),
+              : autoTextArea(editState.value || '', function (e) { setEditState({ key: itemKey(it), ref: it.ref, path: it.path, value: e.target.value }) }, null, null, saveTurnEdit),
             React.createElement('div', { style: btnRow },
               !isEditing
                 ? React.createElement('div', { style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
@@ -2352,7 +2359,7 @@ function MemoryView(props) {
                     React.createElement('button', { style: mmBtn, onClick: function () {
                       // 归档条目：点修改时时间范围联动到该归档月（含最旧包查询语义）
                       if (it.archived && it.month) { setTimeFrom(it.month + '-01'); setTimeTo(it.month + '-31') }
-                      setEditState({ path: it.path, value: it.content || '' })
+                      setEditState({ key: itemKey(it), ref: it.ref, path: it.path, value: it.content || '' })
                     } }, '修改'),
                     React.createElement('button', { style: mmBtn, onClick: function () {
                       // 重新总结：弹窗选「当前活跃记忆总结 / 当时活跃记忆总结」后执行
