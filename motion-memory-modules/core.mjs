@@ -676,20 +676,20 @@ export function createCore(ctx) {
   }
 
   // ── 插件目录（供 isUnderPluginDir 前向引用；非 git 安装也适用）──────────
+  // 定位策略（v0.4.3 修复）：
+  //   ① import.meta.url / __filename 指向本模块（core.mjs 或 motion-memory.js）。
+  //      单文件版：import.meta.url 即 motion-memory.js，取其所在目录；
+  //      模块化版：本文件位于 <插件根>/motion-memory-modules/core.mjs，上溯两级即插件根。
+  //   ② 若 import.meta.url 不可用（DSH 新加载机制可能改写）→ 从配置推导：
+  //      DSH_HOME/profiles/<profile>/plugins/motion-memory-dist（或 -modules 同级）。
+  //   ③ 均失败返回 ''，由调用方安全兜底（拒绝更新而非写错目录）。
   function pluginGitDir() {
     try {
-      let p = ''
-      try { p = (typeof import.meta !== 'undefined' && import.meta.url) ? import.meta.url : '' } catch (e) {}
-      if (!p && typeof __filename !== 'undefined') p = __filename
-      if (!p) return ''
-      // file:///C:/... → C:/...（去前导 / 和 file 前缀，统一 / 分隔）
-      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7))
-      p = String(p).replace(/\\/g, '/').replace(/^\/+/, '')
-      let cur = p
-      const idx = cur.toLowerCase().indexOf('motion-memory.js')
-      if (idx >= 0) cur = cur.slice(0, idx)
+      const base = pluginDir()
+      if (!base) return ''
+      let cur = base
       for (let i = 0; i < 8; i++) {
-        if (existsSync(cur + '.git')) return cur.replace(/\/+$/, '')
+        if (existsSync(cur + '/.git')) return cur.replace(/\/+$/, '')
         const last = cur.lastIndexOf('/')
         if (last <= 0) break
         cur = cur.slice(0, last)
@@ -700,14 +700,35 @@ export function createCore(ctx) {
   // 插件所在目录（motion-memory.js 的上级目录；非 git 安装也适用；统一 / 分隔）
   function pluginDir() {
     try {
+      // ① import.meta.url / __filename 定位
       let p = ''
       try { p = (typeof import.meta !== 'undefined' && import.meta.url) ? import.meta.url : '' } catch (e) {}
       if (!p && typeof __filename !== 'undefined') p = __filename
-      if (!p) return ''
-      if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7))
-      p = String(p).replace(/\\/g, '/').replace(/^\/+/, '')
-      const idx = String(p).toLowerCase().indexOf('motion-memory.js')
-      if (idx >= 0) return String(p).slice(0, idx).replace(/\/+$/, '')
+      if (p) {
+        if (p.startsWith('file://')) p = decodeURIComponent(p.slice(7))
+        p = String(p).replace(/\\/g, '/').replace(/^\/+/, '')
+        // 模块化版：<插件根>/motion-memory-modules/core.mjs → 插件根 = 上溯两级
+        const mIdx = p.toLowerCase().indexOf('/motion-memory-modules/')
+        if (mIdx >= 0) return p.slice(0, mIdx).replace(/\/+$/, '')
+        // 单文件版：import.meta.url 含 motion-memory.js → 其所在目录
+        const idx = p.toLowerCase().indexOf('motion-memory.js')
+        if (idx >= 0) return p.slice(0, idx).replace(/\/+$/, '')
+      }
+      // ② fallback：从配置路径推导插件目录（DSH 新加载机制改写 import.meta.url 时的兜底）
+      const home = dshHome()
+      const profile = dshProfile()
+      if (home) {
+        const candidates = [
+          p(home, 'profiles', profile, 'plugins', 'motion-memory-dist'),
+          p(home, 'profiles', profile, 'plugins', 'motion-memory'),
+          p(home, 'profiles', profile, 'plugins'),
+        ]
+        for (const c of candidates) {
+          try {
+            if (existsSync(p(c, 'motion-memory.js')) || existsSync(p(c, 'motion-memory-modules'))) return normWs(c)
+          } catch (e) {}
+        }
+      }
     } catch (e) {}
     return ''
   }

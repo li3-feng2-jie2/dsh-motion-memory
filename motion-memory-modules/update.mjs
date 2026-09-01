@@ -52,6 +52,10 @@ export function createUpdate(core, deps) {
     }
     return 0
   }
+  // MANIFEST 哈希值归一化：清单存 "sha256:<hex>"，digest('hex') 产出纯 hex，统一去掉前缀再比较
+  function normHash(v) {
+    return String(v || '').replace(/^sha256:/i, '').trim()
+  }
   // 检查更新（git 分支：fetch 对比提交；非 git 分支：版本号对比）
   async function checkUpdate() {
     const dir = pluginGitDir()
@@ -105,7 +109,7 @@ export function createUpdate(core, deps) {
               const localBytes = abs && existsSync(abs) ? readFileSync(abs) : null
               if (!localBytes) { missing.push(rel); continue }
               const lh = createHash('sha256').update(localBytes).digest('hex')
-              if (lh !== String(manifest.files[rel] || '')) changed.push(rel)
+              if (lh !== normHash(manifest.files[rel])) changed.push(rel)
               if (abs) delete localSeen[abs]
             }
             if (base) extra = Object.keys(localSeen)
@@ -169,7 +173,7 @@ export function createUpdate(core, deps) {
       }
       walkLocal(base)
       for (const rel of Object.keys(manifest.files)) {
-        const remoteHash = String(manifest.files[rel] || '')
+        const remoteHash = normHash(manifest.files[rel])
         // 路径统一 / 分隔（p() 输出即 /；远端清单也是 /）
         const normRel = String(rel).replace(/\\/g, '/')
         const normAbs = p(base, normRel)
@@ -201,7 +205,7 @@ export function createUpdate(core, deps) {
         if (!resp || !resp.ok) { cleanupUpdateCache(tmpDir); return { ok: false, text: '下载失败：' + f.rel + '（HTTP ' + (resp && resp.status) + '），已清理临时文件，未改动插件' } }
         const buf = Buffer.from(await resp.arrayBuffer())
         const hash = createHash('sha256').update(buf).digest('hex')
-        if (hash !== String(manifest.files[f.rel] || '')) { cleanupUpdateCache(tmpDir); return { ok: false, text: '校验失败：' + f.rel + '（哈希不匹配），已清理临时文件，未改动插件' } }
+        if (hash !== normHash(manifest.files[f.rel])) { cleanupUpdateCache(tmpDir); return { ok: false, text: '校验失败：' + f.rel + '（哈希不匹配），已清理临时文件，未改动插件' } }
         const normRelT = String(f.rel).replace(/\\/g, '/')
         const tmpAbs = p(tmpDir, normRelT)
         mkdirSync(tmpAbs.slice(0, tmpAbs.lastIndexOf('/')), { recursive: true })
