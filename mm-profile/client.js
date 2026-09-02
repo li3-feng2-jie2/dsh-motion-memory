@@ -1,8 +1,9 @@
 // mm-profile client half — classic-script bundle（非 ESM）
-// 记忆面板「用户画像」页签：用户画像 + 用户要求两份全局文件的可视化编辑。
+// 运动记忆插件的「用户画像」页签（conversation.view slot，order 30，位于「记忆」之后）：
+// 编辑用户画像 + 用户要求两份全局共享记忆文件（跨会话跨智能体，随首轮总览注入）。
 // 经 fetch POST /mmprofile/<endpoint> 调本包 host 半（index.js 注册的 connection channel），
 // 信封格式与 mm-settings 一致（{ type:'client-request', rpcId, method, payload }）。
-// 独立页签（conversation.view slot），不动 mm-settings/client.js 的记忆面板结构。
+// 页面顶部含运动记忆插件功能说明（本页在插件中的定位 + 完整能力一览）。
 
 window.__ModuleLoader__.load({
   id: 'mm-profile',
@@ -111,8 +112,8 @@ window.__ModuleLoader__.load({
       var injR = (cfg && cfg.injectUserReqs !== false) ? '随首轮总览注入' : '注入已关闭（仅手动编辑）'
 
       return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
-        React.createElement('div', { style: { padding: '8px 12px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)', borderBottom: '1px dashed var(--dsw-alias-border-l1)', lineHeight: 1.6, whiteSpace: 'pre-wrap' } },
-          '用户级记忆（跨会话跨智能体共享，所有智能体首轮总览注入）：\n用户画像 = 用户习惯 / 背景 / 协作偏好；用户要求 = 用户反复强调的通用要求（“以后都这样”）。\n编辑后点击“保存”立即生效；注入开关在“设置 → 运动记忆 → 提示词注入”。'),
+        React.createElement('div', { style: { padding: '8px 12px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)', borderBottom: '1px dashed var(--dsw-alias-border-l1)', lineHeight: 1.7, whiteSpace: 'pre-wrap' } },
+          '【运动记忆 Motion Memory】本页是运动记忆插件的「用户画像」功能：把「关于用户」和「用户反复强调的要求」沉淀成两份全局记忆文件，跨会话、跨智能体共享，所有智能体在首轮总览时自动载入，用于快速了解你的习惯与偏好（相当于 ChatGPT 记忆中的用户画像 + 自定义指令）。\n\n运动记忆插件完整能力：① 对话跟踪——每个会话的轮次自动总结，沉淀为可溯源的记忆文档（会话@轮次 引用）；② 记忆总览——首轮自动注入必要记忆/活跃关键词/最近会话工作/用户画像；③ 关键词记忆——重要内容一键落档、增量更新、遗忘管理；④ 周期总结——按时间窗口把零散记忆压缩成周期摘要；⑤ 记忆页面——轮次总结/会话记忆/活跃记忆/关键词/周期总结分页浏览编辑。详细说明见「设置 → 运动记忆」页。\n\n本页操作说明：编辑下方两块内容后点击对应“保存”立即写入全局共享文件；注入开关在“设置 → 运动记忆 → 提示词注入”（注入用户画像 / 注入用户要求）。'),
         React.createElement('div', { style: { flex: 1, overflowY: 'auto', padding: 8 } },
           React.createElement('div', { style: rowStyle },
             React.createElement('span', { style: labelStyle }, '用户画像（用户习惯 / 背景 / 技术栈 / 协作偏好） · ' + injP),
