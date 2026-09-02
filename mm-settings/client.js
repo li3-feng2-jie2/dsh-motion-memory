@@ -1398,7 +1398,13 @@ function MemoryView(props) {
   var cfgV = cfgState[0]
   var setCfgV = cfgState[1]
   // 会话记忆页时间范围是否已按"全局最新~最旧"初始化（避免用户手动清空后被反复填充）
+  // 会话记忆页时间范围是否已按"全局最新~最旧"初始化（避免用户手动清空后被反复填充）
   var rangeInitRef = React.useRef(false)
+  // 会话记忆页全量时间范围（host globalRange：所有会话已知最旧~最新，不受当前窗口过滤影响）——
+  // 供时间条做 min/max 下限（用户可查任意历史区间，列表默认只显示最近 72h）
+  var globalRangeS = React.useState(null)
+  var globalRangeV = globalRangeS[0]
+  var setGlobalRange = globalRangeS[1]
   // 周期页时间范围是否已按"文件最早~最晚"初始化
   var periodRangeInitRef = React.useRef(false)
 
@@ -1415,8 +1421,11 @@ function MemoryView(props) {
     setBusy(true)
     var p = Promise.resolve()
     // 时间范围：'YYYY-MM-DD' → 毫秒（from=当天0点，to=当天23:59:59）；opts 可显式传（onChange 里 state 未更新）
-    var fMs = opts && opts.fromMs !== undefined ? opts.fromMs : (timeFromV ? new Date(timeFromV + 'T00:00:00').getTime() : 0)
-    var tMs = opts && opts.toMs !== undefined ? opts.toMs : (timeToV ? new Date(timeToV + 'T23:59:59').getTime() : 0)
+    // 会话记忆页首次打开（未初始化时间窗）默认最近 72 小时：先带默认窗口查询，再补 UI 时间条（避免先全量后缩窗）
+    var sessDefault72 = (t === 'sessions' && !focusSidV && !rangeInitRef.current && !timeFromV && !timeToV)
+    var sessF72 = sessDefault72 ? Date.now() - 72 * 3600000 : 0
+    var fMs = opts && opts.fromMs !== undefined ? opts.fromMs : (timeFromV ? new Date(timeFromV + 'T00:00:00').getTime() : (sessF72 || 0))
+    var tMs = opts && opts.toMs !== undefined ? opts.toMs : (timeToV ? new Date(timeToV + 'T23:59:59').getTime() : (sessDefault72 ? Date.now() : 0))
     // 强制刷新时先清空对应页数据 → 显示"加载中"；缓存命中（非 force）不动现有数据
     if (t === 'turns') setTurns(force ? null : turnsV)
     if (t === 'sessions') { if (focusSidV) setTurns(force ? null : turnsV); else setSessions(force ? null : sessionsV) }
@@ -1436,15 +1445,20 @@ function MemoryView(props) {
     // 会话记忆页：列表态加载会话列表；进入某会话（focusSidV 非空）时加载该会话轮次
     if (t === 'sessions') {
       if (focusSidV) p = callHost('mm-turn-list', { sid: focusSidV, from: fMs || 0, to: tMs || 0, includeArchive: searchArchV, force: force }).then(function (r) { if (mySeq !== reqSeqRef.current) return; setTurns((r && r.items) || []) })
-      else p = callHost('mm-session-list', { force: force }).then(function (r) {
+      else p = callHost('mm-session-list', { from: fMs || 0, to: tMs || 0, force: force }).then(function (r) {
         if (mySeq !== reqSeqRef.current) return
         setSessions((r && r.items) || [])
-        // 首次打开会话记忆页时，时间选择范围 = 记忆文件最新 ~ 最旧
+        // 全量时间范围（不受窗口过滤）：供时间条下限——用户可查任意历史区间
         var gr = r && r.globalRange
-        if (!rangeInitRef.current && gr && gr.from && gr.to) {
+        if (gr && gr.from && gr.to) setGlobalRange({ from: gr.from, to: gr.to })
+        // 首次打开会话记忆页时，默认时间窗口 = 最近 72 小时（快速看"最近做了什么"）；
+        // 更久远的时间用顶部时间条选择；"全部"按钮清空限制查全部
+        if (!rangeInitRef.current) {
           rangeInitRef.current = true
-          setTimeFrom(new Date(gr.from).toISOString().slice(0, 10))
-          setTimeTo(new Date(gr.to).toISOString().slice(0, 10))
+          var nowT = new Date()
+          var d3 = new Date(nowT.getTime() - 72 * 3600000)
+          setTimeFrom(d3.toISOString().slice(0, 10))
+          setTimeTo(nowT.toISOString().slice(0, 10))
         }
       })
     }
@@ -2407,7 +2421,7 @@ function MemoryView(props) {
         ),
         React.createElement('div', { style: { flex: 1, minWidth: 160, color: 'var(--dsw-alias-label-secondary)', fontSize: 11 } },
           s.summary ? React.createElement('div', { style: { color: 'var(--dsw-alias-label-primary)', fontSize: 12, marginBottom: 2, wordBreak: 'break-all' } }, s.summary) : null,
-          React.createElement('span', { style: { wordBreak: 'break-all' } }, s.sid + ' · ' + s.turns + ' 条轮次 · ' + (s.firstAt || '').slice(0, 10) + ' ~ ' + (s.lastAt || '').slice(0, 10)),
+          React.createElement('span', { style: { wordBreak: 'break-all' } }, s.sid + ' · ' + s.turns + ' 条轮次' + (s.lastTurnSteps ? ' · 末轮 ' + s.lastTurnSteps + ' 步' : '') + ' · ' + String((s.firstAt || '')).slice(0, 16).replace('T', ' ') + ' ~ ' + String((s.lastAt || '')).slice(0, 16).replace('T', ' ')),
           React.createElement('button', { style: mmBtn, title: '复制会话 id', onClick: function (e) { e.stopPropagation(); try { navigator.clipboard.writeText(s.sid); setMsg('已复制会话 id：' + s.sid) } catch (err) { setMsg(s.sid) } } }, '复制 id'),
         ),
         React.createElement('button', { style: mmBtn, onClick: function (e) { e.stopPropagation(); enter() } }, '查看轮次'),
@@ -2424,13 +2438,11 @@ function MemoryView(props) {
   ]
   var body = tabV === 'turns' ? renderTurns() : tabV === 'sessions' ? renderSessions() : tabV === 'active' ? renderActive() : tabV === 'kws' ? renderKws() : renderPeriods()
   // 时间段搜索栏（会话记忆/周期总结页显示；轮次总结页固定当前会话不带时间）
-  // 常规时间范围：从 ≤ 到；联动（从≤到、到≥从）；min=页面记忆最早、max=今天；时间变化自动刷新（无"搜索/清空"按钮）
+  // 常规时间范围：从 ≤ 到；联动（从≤到、到≥从）；min=已知最旧、max=今天；时间变化自动刷新（无"搜索/清空"按钮）
+  // 会话记忆页：默认窗口 = 最近 72h（rangeInit 填充）；下限 = 全量 globalRange（不受窗口过滤，可查任意历史）
   var tbMin = ''
-  if (tabV === 'sessions' && sessionsV) {
-    for (var tbi = 0; tbi < sessionsV.length; tbi++) {
-      var tbd = String((sessionsV[tbi] && sessionsV[tbi].firstAt) || '').slice(0, 10)
-      if (tbd && (!tbMin || tbd < tbMin)) tbMin = tbd
-    }
+  if (tabV === 'sessions') {
+    if (globalRangeV && globalRangeV.from) tbMin = String(new Date(globalRangeV.from).toISOString().slice(0, 10))
   } else if (tabV === 'periods' && periodsV) {
     for (var tbi2 = 0; tbi2 < periodsV.length; tbi2++) {
       var tbd2 = String((periodsV[tbi2] && periodsV[tbi2].createdAt) || '').slice(0, 10)
@@ -2451,6 +2463,16 @@ function MemoryView(props) {
       } }),
       React.createElement('span', {}, '含归档'),
     ) : null,
+    tabV === 'sessions' ? React.createElement('span', { key: '__quick', style: { display: 'inline-flex', gap: 4, alignItems: 'center' } }, ['3天', '7天', '30天'].map(function (lb) {
+      var days = Number(lb.slice(0, -1))
+      return React.createElement('button', { key: lb, style: mmBtn, onClick: function () {
+        var nn = new Date(Date.now() - days * 24 * 3600000)
+        setTimeFrom(nn.toISOString().slice(0, 10))
+        setTimeTo(todayStr())
+        setSearchArch(false); setTurns(null); setSessions(null)
+        refreshTab('sessions', true, { fromMs: nn.getTime(), toMs: Date.now() })
+      } }, '近' + lb)
+    })) : null,
     React.createElement('button', { style: mmBtn, onClick: function () { setTimeFrom(''); setTimeTo(''); setSearchArch(false); setTurns(null); setSessions(null); setPeriods(null); refreshTab(tabV, true) } }, '全部'),
   ) : null
   var rendered

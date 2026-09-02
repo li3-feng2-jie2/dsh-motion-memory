@@ -250,6 +250,30 @@ export function createSessionLogReader(deps) {
       return title
     } catch (e) { return '' }
   }
+  // 会话最后轮次信息（只读 turn/start 与 step 事件，不回读内容）：
+  // 返回 { lastTurn, lastTurnSteps, turnCount }；失败/无日志返回 null。
+  // 供会话列表显示"最后轮次总计步数"（相对步数 = 该轮最大 step 编号，第 1 步即用户消息）。
+  function sessionLastTurnInfo(sid) {
+    try {
+      const fast = readSessionLogFrames(sid)
+      if (!fast || !fast.events || !fast.events.length) return null
+      let lastTurn = 0, turnCount = 0
+      const stepMaxByTurn = {}
+      for (const e of fast.events) {
+        const d = (e && e.data) || {}
+        if (e.type === 'turn/start' && d.turn !== undefined) {
+          const t = Number(d.turn)
+          if (t > lastTurn) lastTurn = t
+          if (t > turnCount) turnCount = t
+        } else if ((e.type === 'step/start' || e.type === 'assistant/message') && d.turn !== undefined && d.step !== undefined) {
+          const t = Number(d.turn), st = Number(d.step)
+          if (t > 0 && st > (stepMaxByTurn[t] || 0)) stepMaxByTurn[t] = st
+        }
+      }
+      if (!lastTurn) return null
+      return { lastTurn, lastTurnSteps: stepMaxByTurn[lastTurn] || 0, turnCount }
+    } catch (e) { return null }
+  }
   // 会话日志相对指向（① 引用增强）：工作区 slug + 日志相对路径（相对 DSH_HOME），
   // 供事件记忆溯源时无需 sessionQuery 即可推导会话记录文件位置。
   function buildSessionRef(sid, turn) {
@@ -268,7 +292,7 @@ export function createSessionLogReader(deps) {
       logRelPath: rel || null,
     }
   }
-  return { sessionLogPathOf: resolveLogPath, readSessionLogFrames, readSessionEvents, readSessionEventsFirstFrames, readSessionTitleFromLog, buildSessionRef }
+  return { sessionLogPathOf: resolveLogPath, readSessionLogFrames, readSessionEvents, readSessionEventsFirstFrames, readSessionTitleFromLog, buildSessionRef, sessionLastTurnInfo }
 }
 
 // B 档别名：createSessionLogReader 内部引用（模块顶层三参数版）

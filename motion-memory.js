@@ -90,6 +90,7 @@ export function apply(ctx) {
   const {
     sessionLogPathOf, readSessionLogFrames, readSessionEvents,
     readSessionEventsFirstFrames, readSessionTitleFromLog, buildSessionRef,
+    sessionLastTurnInfo,
   } = createSessionLogReader({ p, state, ctx })
   // 注入 session-log 的限帧读取（sessionPresetOfAsync 兜底用）
   setReaderFirstFrames(readSessionEventsFirstFrames)
@@ -289,21 +290,49 @@ export function apply(ctx) {
     return out.length > cap ? trimTextMiddle(out, trimCap(cap)) : out
   }
   // 轮次引用统一读取：ref 格式 `会话id@轮次`（整轮）、`会话id@轮次:step1-2`（步骤段）、
+  // `会话id@轮次:tailN`（节约视图：用户要求 + 末尾 N 步，与对话跟踪 truncated 同一组装思路）、
   // 兼容节约模式产生的 `会话id@轮次:truncated` 与句子切分后缀 `#sN`（剥掉后回退到轮次级）
   async function readTurnRef(ref, cap) {
     const s = String(ref || '')
     // 剥掉 #sN 句子切分后缀 与 :truncated/:truncated#sN 节约模式后缀
     const normalized = s.replace(/#s\d+$/, '').replace(/:truncated(#s\d+)?$/, '')
-    const m = normalized.match(/^(.+)@(\d+)(?::step(\d+)(?:-(\d+))?)?$/)
+    const m = normalized.match(/^(.+)@(\d+)(?::tail(\d+)|:step(\d+)(?:-(\d+))?)?$/)
     if (!m) return '（轮次指向格式无效：' + s + '）'
     const sid = m[1]
     const turn = Number(m[2])
-    const stepFrom = m[3] !== undefined ? Number(m[3]) : undefined
-    const stepTo = m[4] !== undefined ? Number(m[4]) : stepFrom
+    const tailN = m[3] !== undefined ? Number(m[3]) : undefined
+    const stepFrom = m[4] !== undefined ? Number(m[4]) : undefined
+    const stepTo = m[5] !== undefined ? Number(m[5]) : stepFrom
+    if (tailN !== undefined) return readTurnTail(sid, turn, tailN, cap)
     if (stepFrom === undefined) return readTurn(sid, turn, cap)
     const steps = await readStepRange(sid, turn, stepFrom, stepTo)
     const text = stepsToText(steps, true)
     if (!text) return '（该步骤段无文本内容）'
+    return text.length > cap ? trimTextMiddle(text, trimCap(cap)) : text
+  }
+  // 节约视图读取：用户要求（本轮入口）+ 末尾 N 步文本（相对步数，N 缺省整轮退化为 readTurn）。
+  // 组装与对话跟踪 truncated 节约模式一致（【用户要求】+【推进】拼接），供 memory_query
+  // openTurn 与记忆页面"尾部快速了解"使用——看末尾几步即可把握本轮大部分信息。
+  async function readTurnTail(sid, turn, n, cap) {
+    const num = Math.max(1, Math.floor(Number(n)) || 1)
+    const userText = await readTurnUserText(sid, turn, 4096)
+    const steps = await readStepRange(sid, turn, 1, undefined)
+    if (!steps || !steps.length) {
+      const ut = userText || ''
+      if (!ut) return '（该轮次无步骤内容）'
+      return ut.length > cap ? trimTextMiddle(ut, trimCap(cap)) : ut
+    }
+    const tail = steps.length > num ? steps.slice(-num) : steps
+    const parts = []
+    if (userText) parts.push('【用户要求】' + userText)
+    if (tail.length) {
+      const label = tail.length < steps.length
+        ? '【末尾 ' + tail.length + ' 步 / 共 ' + steps.length + ' 步，省略中间】'
+        : '【全部 ' + tail.length + ' 步】'
+      parts.push(label + '\n' + stepsToText(tail, true))
+    }
+    const text = parts.join('\n')
+    if (!text) return '（该轮次无文本内容）'
     return text.length > cap ? trimTextMiddle(text, trimCap(cap)) : text
   }
 
@@ -1037,7 +1066,7 @@ export function apply(ctx) {
   tool('memory_query', '运动记忆·查询/回忆：开工总览（默认：必要+当前活跃+索引+最近事件）；keyword=匹配记忆标题列表；open=阅读指定标题（关联展开+历史记录）；openTurn=读会话轮次原文（会话id@轮次[:step]）；recent=最近事件条数；enhance=true 深度增强。跨智能体查询流程：① 先 agents=true 列出所有可用智能体概览（显示 id+DSH 显示名，如 preset:cordis（创造模式），及各自重要/事件/周期记忆量）→ ② 再 ownerKey=preset:xxx（概览中的 id）配合 keyword=词 / open=标题 / recent=n 定向查询该智能体的关键词、周期、事件记忆文件；ownerKey=all 查询所有智能体。纯文件读取不调模型（enhance 除外）。', {
     keyword: { type: 'string', description: '匹配词：列出重要/周期记忆标题中包含该词（或内容包含）的条目' },
     open: { type: 'string', description: '阅读指定标题的记忆文件（展开关联+历史记录）' },
-    openTurn: { type: 'string', description: '读对话轮次原文，格式 会话id@轮次[:stepN]' },
+    openTurn: { type: 'string', description: '读对话轮次原文：会话id@轮次（整轮）；会话id@轮次:stepN 或 :stepN-M（指定步数段）；会话id@轮次:tailN（节约视图：用户要求+末尾N步，看末尾几步快速把握轮次）' },
     recent: { type: 'integer', description: '返回最近 n 条事件记忆总览（默认取配置 recentOverviewN）' },
     enhance: { type: 'boolean', description: 'true 时启用深度查询增强（调模型整合关联展开与上下文，较慢）' },
     queryHistory: { type: 'integer', description: 'open 时附带的查询记录条数；-1=5，>=0 用该值，缺省按配置（0=不附带）' },
@@ -1933,6 +1962,12 @@ export function apply(ctx) {
       const turns = sessionTurnsOf(sid)
       if (!turns.length) return { ok: true, data: null }
       return { ok: true, data: { min: turns[0], max: turns[turns.length - 1] } }
+    },
+    // 会话最后轮次信息（真实日志步数）：供会话列表显示"最后轮次 N 步"（相对步数）
+    async sessionLastTurnInfo(args) {      let sid = (args && args.sid) ? String(args.sid) : ''
+      if (!sid) return { ok: true, data: null }
+      if (sid.indexOf('session-') !== 0) sid = 'session-' + sid
+      return { ok: true, data: sessionLastTurnInfo(sid) }
     },
     // 轮次总结写入会话聚合文件（mm-settings 手动创建轮次总结走这里，不再生成散事件文件）
     async turnSaveToAggregate(args) {

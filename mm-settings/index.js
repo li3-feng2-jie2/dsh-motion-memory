@@ -984,8 +984,12 @@ export function apply(ctx) {
       // 会话列表：从事件文件 sessionRef/links 收集所有会话（未归档），带轮次统计。
       // 结果带 30s 内存缓存（避免频繁打开时全量重扫变慢）。
       case 'mm-session-list': {
-        const cacheKey = 'sessions'
         const forceS = !!(payload && payload.force)
+        // 时间段过滤（from/to 为毫秒；默认窗口由 client 传入，如最近 72h）：
+        // 会话活动区间（firstAt~lastAt）与查询窗口相交才保留——列表只显示"最近做了什么"
+        const fMs = payload && payload.from ? Number(payload.from) : 0
+        const tMs = payload && payload.to ? Number(payload.to) : 0
+        const cacheKey = 'sessions' + (fMs ? ':' + fMs : '') + (tMs ? ':' + tMs : '')
         const c = await readCfg()
         const r = rootOf(c)
         const base = dailyBaseDirOf(r)
@@ -1029,7 +1033,17 @@ export function apply(ctx) {
           if (gUpdated && gUpdated > gMax) gMax = gUpdated
           map.set(sid, cur)
         }
-        const items = [...map.values()].sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || ''))
+        let items = [...map.values()].sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || ''))
+        // 时间过滤：会话活动区间与窗口相交（lastAt ≥ from 且 firstAt ≤ to）
+        if (fMs || tMs) {
+          items = items.filter(it => {
+            const f0 = parseIso(it.firstAt || '') || 0
+            const l0 = parseIso(it.lastAt || '') || f0
+            if (fMs && l0 && l0 < fMs) return false
+            if (tMs && f0 && f0 > tMs) return false
+            return true
+          })
+        }
         // 标题读取：直接用帧级 readSessionTitleFromLog（实测全部 <10ms/个、命中率 19/19），
         // 不再调 sessionQuery.readTitleSnapshots——它在首次扫描时对 19 个会话耗时 ~4.5s（慢 65 倍），是列表加载慢的直接来源。
         await Promise.all(items.map(async (it) => {
@@ -1046,6 +1060,20 @@ export function apply(ctx) {
           items[i].agent = ag
           withAgent.push(items[i])
         }
+        // 会话最后轮次真实步数（会话日志 turn/start + step 事件，只读不加载内容）：
+        // 供会话列表显示"最后轮次 N 步"，快速了解该会话最近一次对话的规模
+        await Promise.all(withAgent.map(async (it) => {
+          try {
+            const api = ctx.motionMemoryApi
+            if (!api || typeof api.sessionLastTurnInfo !== 'function') return
+            const r = await api.sessionLastTurnInfo({ sid: it.sid })
+            const d = r && r.data
+            if (d && d.lastTurn) {
+              it.lastTurn = d.lastTurn
+              it.lastTurnSteps = d.lastTurnSteps || 0
+            }
+          } catch (e) {}
+        }))
         const data = { items: withAgent, globalRange: gMin ? { from: gMin, to: gMax || gMin } : null }
         state.mmCache = state.mmCache || {}
         state.mmCache[cacheKey] = { at: Date.now(), fp, data }
