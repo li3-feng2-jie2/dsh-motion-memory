@@ -564,6 +564,8 @@ window.__ModuleLoader__.load({
           Row('启用提示词注入', Check({ checked: !!cfg.inject, onChange: function (e) { set('inject', e.target.checked) } }), '任何会话启动时自动加载当前活跃、关键词、重要信息记忆；取消则不注入'),
           Row('注入上限（字节）', Num({ value: cfg.injectLimitBytes || 4096, onChange: function (e) { set('injectLimitBytes', Number(e.target.value) || 4096) } }), '注入总览文本上限（字节），超出后从最早的记录开始截断'),
           Row('最近事件总览', Num({ value: cfg.recentOverviewN || 3, onChange: function (e) { set('recentOverviewN', Number(e.target.value) || 3) } }), '注入显示最近 n 条会话摘要'),
+          Row('注入用户画像', Check({ checked: cfg.injectUserProfile !== false, onChange: function (e) { set('injectUserProfile', e.target.checked) } }), '用户级画像（跨会话跨智能体共享，记忆根/用户画像/用户画像.json）随首轮总览注入；关 = 不注入（仍可用 memory_add / 记忆页编辑）'),
+          Row('注入用户要求', Check({ checked: cfg.injectUserReqs !== false, onChange: function (e) { set('injectUserReqs', e.target.checked) } }), '用户级要求（跨会话跨智能体共享，用户要求.json）随首轮总览注入，让不同智能体快速了解用户反复强调的通用要求'),
         ),
         Collapse({ title: '阅读与查询设置', hint: '展开层数 / 历史条数 / 截断', defaultOpen: false },
           Row('关联记忆展开（层数）', Num({ value: cfg.cascadeDepth === undefined ? 3 : cfg.cascadeDepth, onChange: function (e) { set('cascadeDepth', Number(e.target.value) || 0) } }), '读取记忆时按关联引用展开子记忆内容 n 层；0=不展开（默认 3 层）'),

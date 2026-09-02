@@ -24,6 +24,7 @@ export function createWrite(core, deps) {
     validateLinks, withActiveParents, autoLink, unmountFromActive,
     appendTurnToAggregate, writeActive, withSourceRef, touchActive,
     buildSessionRef, dedupJudgeVerdict, upsertEmbedding, removeEmbedding,
+    saveUserProfile,
   } = deps || {}
 
   async function memCmdAdd(args, meta) {
@@ -36,6 +37,18 @@ export function createWrite(core, deps) {
       await writeActive(meta.session, meta.turn || 0, { ownerKey, custom: content, me: meta, clear: !!args.clear })
       state.necessaryCache.set(meta.session, { content, updatedAt: nowIso() })
       return { ok: true, text: args.clear ? '已清空必要记忆' : '必要记忆已写入（第' + meta.turn + '轮），下次请求将随记忆总览注入' }
+    }
+    // ── kind=user_profile / kind=user_requirements：全局用户级画像/要求（跨会话跨智能体共享，随总览注入）──
+    if (kind === 'user_profile' || kind === 'user_requirements') {
+      const which = kind === 'user_requirements' ? 'req' : 'profile'
+      if (args.clear) {
+        await saveUserProfile(which, '', meta)
+        return { ok: true, text: '已清空用户' + (which === 'req' ? '要求' : '画像') + '（全局共享）' }
+      }
+      const content = String(args.content || '').trim()
+      if (!content) return { ok: false, text: '内容为空：请传 content（用户' + (which === 'req' ? '要求' : '画像') + '全文）' }
+      const r = await saveUserProfile(which, content, meta)
+      return { ok: true, text: '用户' + (which === 'req' ? '要求' : '画像') + '已写入（全局共享，所有智能体首轮注入）' + (r && r.text ? '：' + r.text : ''), data: { kind: which } }
     }
     // ── kind=event：事件记忆（日期目录，直接写入；带会话@轮次时并入会话聚合）──
     if (kind === 'event') {

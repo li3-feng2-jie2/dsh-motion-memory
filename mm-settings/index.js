@@ -669,7 +669,7 @@ export function apply(ctx) {
         state.modelsCache = null // 模型相关配置可能已变，失效 models 缓存
         const c = await readCfg()
         let changed = false
-        const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'decayDays', 'activeNotify', 'queryOtherAgents', 'readTrimChars']
+        const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'decayDays', 'activeNotify', 'queryOtherAgents', 'readTrimChars', 'injectUserProfile', 'injectUserReqs']
         for (const k of baseKeys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
         if (patch.root !== undefined && patch.root !== c.root) { c.rootUserSet = true }
         if (patch.recordModel && typeof patch.recordModel === 'object') {

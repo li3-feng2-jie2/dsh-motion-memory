@@ -2,8 +2,11 @@
 # 作为组合包安装时，插件行按包名引用：
 #   - motion-memory: 记忆核心 host 插件（包 main -> motion-memory.js）
 #   - mm-settings:   设置界面插件（包内子包 mm-settings/，含 host index.js 与 client client.js）
+#   - mm-profile:    用户画像独立页面插件（批次 B：全局用户画像/要求可视化编辑，包内子包 mm-profile/）
 - insert:
     - id: motion-memory
       name: dsh-motion-memory
     - id: mm-settings
       name: dsh-motion-memory/mm-settings
+    - id: mm-profile
+      name: dsh-motion-memory/mm-profile

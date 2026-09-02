@@ -60,6 +60,8 @@ import { createWrite } from './motion-memory-modules/write.mjs'
 import { createSemantic } from './motion-memory-modules/semantic.mjs'
 // 查询/回忆域模块（拆分，C 档）：memory_query 实现/往时回忆/捡回/历史（依赖注入）
 import { createQuery } from './motion-memory-modules/query.mjs'
+// 用户画像域模块（批次 B）：全局用户画像/用户要求读写（跨会话跨智能体共享，随总览注入）
+import { createProfile } from './motion-memory-modules/profile.mjs'
 
 export const name = 'motion-memory'
 
@@ -183,11 +185,17 @@ export function apply(ctx) {
     memCmdPeriodRun, memCmdPeriodStatus,
   } = period
 
+  // 用户画像域（批次 B）：全局用户画像/用户要求读写（profileDir 归 core 路径体系）——
+  // 须先于写入域：write.mjs 的 user_profile/user_requirements kind 依赖 saveUserProfile（const 解构 TDZ）
+  const profile = createProfile(core, {})
+  const { profileDir, readUserProfile, saveUserProfile } = profile
+
   // 写入域（C 档拆分）：memory_add 6 kind（注册壳留主文件，run 体 memCmdAdd 在工厂）
   const write = createWrite(core, {
     validateLinks, withActiveParents, autoLink, unmountFromActive,
     appendTurnToAggregate, writeActive, withSourceRef, touchActive,
     buildSessionRef, dedupJudgeVerdict, upsertEmbedding, removeEmbedding,
+    saveUserProfile,
   })
   const { memCmdAdd } = write
   // SessionEvent 信封 = { type, seq, time, data }：轮次号/步骤号/消息均在 e.data。
@@ -747,8 +755,23 @@ export function apply(ctx) {
       }
     } catch (e) {}
     const inc = activeIncident()
+    // 用户画像 + 用户要求（批次 B）：全局用户级文件，随总览注入（bool 控制）——
+    // 不同智能体快速了解用户习惯/要求；内容变化才触发重注入（参与 digest）
+    let userProfile = '', userReqs = ''
+    try {
+      if (cfg().injectUserProfile !== false) {
+        const pr = await readUserProfile('profile')
+        if (pr && pr.exists) userProfile = String(pr.content || '').slice(0, 1000)
+      }
+      if (cfg().injectUserReqs !== false) {
+        const rq = await readUserProfile('req')
+        if (rq && rq.exists) userReqs = String(rq.content || '').slice(0, 1000)
+      }
+    } catch (e) {}
     return {
       necessary: (nec && nec.content) || '',
+      userProfile,
+      userReqs,
       important: importantTop,
       recentWorks: worksTop,
       keywords,
@@ -763,6 +786,8 @@ export function apply(ctx) {
     // 每有新记录就重注入总览。需要最新记录时 agent 自行调 memory_query。
     const canonical = JSON.stringify({
       necessary: entries.necessary,
+      userProfile: entries.userProfile,
+      userReqs: entries.userReqs,
       important: entries.important,
       keywords: entries.keywords || [],
       incidentId: entries.incident ? entries.incident.id : null,
@@ -777,6 +802,9 @@ export function apply(ctx) {
       '运动记忆·会话总览（仅当记忆变化时更新；需要细节时用 memory_query 查看）：',
     ]
     if (entries.necessary) lines.push('必要记忆：' + entries.necessary)
+    // 用户画像 + 用户要求（批次 B）：全局用户级注入（bool 由 overviewEntries 控制，无内容不显示）
+    if (entries.userProfile) lines.push('用户画像：' + entries.userProfile)
+    if (entries.userReqs) lines.push('用户要求：' + entries.userReqs)
     if (entries.keywords && entries.keywords.length) lines.push('当前活跃关键词：' + entries.keywords.join('、'))
     // 待总结提醒：区分对话跟踪状态——未开启：大段工作完成后自行总结；已开启：跟踪自动总结，不需全部自行总结
     if (!trackOn) {
@@ -1076,8 +1104,8 @@ export function apply(ctx) {
     agents: { type: 'boolean', description: 'true 时列出智能体记忆概览（有哪些智能体 id+显示名、各自记忆量，跨智能体查询第一步），不执行普通查询' },
   }, [], memCmdQuery)
   // 5. 记忆写入（统一入口）：kind=keyword 重要关键词（同名返回已有）；necessary 必要记忆；event 事件；update 更新；forget 遗忘
-  tool('memory_add', '运动记忆·写入：kind=keyword（默认）创建重要关键词记忆——先查同名与近似标题：精确同名返回已有内容（同一实体信息变化→kind=update 更新；不同实体→用更具体标题新建并自动关联既有记忆），近似候选一并列出供判断消歧；kind=necessary 写入本智能体必要记忆（agent.md 语义，写入当前活跃 custom，随总览注入）；kind=event 创建事件记忆（日期目录，直接写入；带会话@轮次自动并入会话聚合记忆）；kind=update 更新已有关键词记忆（diff+mergeDated 自动合并时间变体+forgetIndexes）；kind=edit 按用户明确确认修改任意记忆文件（默认只读保护，必须 force=true）；kind=forget 主动遗忘移入补充；kind=reattach 模型通过上下文判断后挂回/晋升（补充区记忆与会话工作强相关时：挂回当前活跃或移动回重要，触发当前活跃启用得分）。规则：①重要内容先落关键词（kind=keyword），默认自动挂载到当前活跃 keywords 成为指针（方便其他窗口按指针查询），无无缘无故的指向——引用必须真实溯源；②创建/更新关键词时同步维护当前活跃 keywords：对照近期会话工作（works）主题，移除与当前会话无关的过时词，保持关键词与近期工作相关有效（移除时说明理由）；③关键词数量不设硬上限，靠相关性维护约束。', {
-    kind: { type: 'string', enum: ['keyword', 'event', 'necessary', 'update', 'edit', 'forget', 'reattach'], description: '写入类型（默认 keyword）' },
+  tool('memory_add', '运动记忆·写入：kind=keyword（默认）创建重要关键词记忆——先查同名与近似标题：精确同名返回已有内容（同一实体信息变化→kind=update 更新；不同实体→用更具体标题新建并自动关联既有记忆），近似候选一并列出供判断消歧；kind=necessary 写入本智能体必要记忆（agent.md 语义，写入当前活跃 custom，随总览注入）；kind=user_profile 写入全局用户画像（跨会话跨智能体共享，随总览注入，让不同智能体快速了解用户习惯）；kind=user_requirements 写入全局用户要求（同上，用户反复强调的通用要求）；kind=event 创建事件记忆（日期目录，直接写入；带会话@轮次自动并入会话聚合记忆）；kind=update 更新已有关键词记忆（diff+mergeDated 自动合并时间变体+forgetIndexes）；kind=edit 按用户明确确认修改任意记忆文件（默认只读保护，必须 force=true）；kind=forget 主动遗忘移入补充；kind=reattach 模型通过上下文判断后挂回/晋升（补充区记忆与会话工作强相关时：挂回当前活跃或移动回重要，触发当前活跃启用得分）。规则：①重要内容先落关键词（kind=keyword），默认自动挂载到当前活跃 keywords 成为指针（方便其他窗口按指针查询），无无缘无故的指向——引用必须真实溯源；②创建/更新关键词时同步维护当前活跃 keywords：对照近期会话工作（works）主题，移除与当前会话无关的过时词，保持关键词与近期工作相关有效（移除时说明理由）；③关键词数量不设硬上限，靠相关性维护约束。', {
+    kind: { type: 'string', enum: ['keyword', 'event', 'necessary', 'user_profile', 'user_requirements', 'update', 'edit', 'forget', 'reattach'], description: '写入类型（默认 keyword）' },
     title: { type: 'string', description: '标题（keyword/event/update/edit/forget/reattach 用）' },
     content: { type: 'string', description: '内容（keyword/necessary/update/edit 用）' },
     material: { type: 'string', description: '素材（kind=event 用，直接写入）' },
@@ -1968,6 +1996,19 @@ export function apply(ctx) {
       if (!sid) return { ok: true, data: null }
       if (sid.indexOf('session-') !== 0) sid = 'session-' + sid
       return { ok: true, data: sessionLastTurnInfo(sid) }
+    },
+    // 用户画像/用户要求读取（批次 B，全局共享）：mm-profile 页面经此读取两份全局文件
+    async userProfileRead(args) {
+      const which = String((args && args.which) || 'profile')
+      const r = await readUserProfile(which === 'req' ? 'req' : 'profile')
+      return { ok: true, data: r }
+    },
+    // 用户画像/用户要求保存（批次 B，全局共享）：mm-profile 页面经此保存
+    async userProfileSave(args) {
+      const which = String((args && args.which) || 'profile')
+      const content = String((args && args.content) || '')
+      const r = await saveUserProfile(which === 'req' ? 'req' : 'profile', content, { agent: 'user+mm-profile', session: (args && args.session) || '', turn: 0 })
+      return { ok: true, ...r }
     },
     // 轮次总结写入会话聚合文件（mm-settings 手动创建轮次总结走这里，不再生成散事件文件）
     async turnSaveToAggregate(args) {

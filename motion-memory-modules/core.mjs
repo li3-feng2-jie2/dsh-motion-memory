@@ -627,6 +627,10 @@ export function createCore(ctx) {
       activeNoModelSummarize: false,
       // 智能体归属：默认只查本智能体（创建者）的记忆；true = 扩大到查询其他智能体记忆（管理员始终全量）
       queryOtherAgents: false,
+      // 用户画像/用户要求注入（批次 B，默认开）：全局用户级文件随首轮总览注入，
+      // 让不同智能体快速了解用户习惯/要求；关 = 不注入（仍可 memory_add 读写与页面编辑）
+      injectUserProfile: true,
+      injectUserReqs: true,
       // 记忆管理员（阶段1+）：指定模型后启用，空 = 全部关闭
       admin: {
         enabled: false,
