@@ -371,9 +371,34 @@ export function createCore(ctx) {
   }
   // ── 智能体身份键：优先用 agentPreset（同一 preset 的会话 = 同一智能体，共享记忆；
   //    子智能体/无 preset 的会话回退 session id 隔离）─────────────────────────
+  // DSH 0.1.2+（27bf1039/5660f44）Session 移除 .events 全量数组，改 snapshotEvents()/
+  // eventAt(seq) 读取——live 会话事件访问统一走这里，旧版 .events 数组保留兜底。
+  // 权威语义（与 DSH agentPreset 投影一致，网页头部徽标同源）：
+  //   header/首帧只是创建 init 值（GUI 常先以默认 cordis 建档、随后发 agent-preset/selected
+  //   写入真实选择），选择事件必须优先于 init——否则新建会话归属被固定成 cordis。
+  function lastPresetSelectedOf(s) {
+    try {
+      let list = null
+      if (s && typeof s.snapshotEvents === 'function') list = s.snapshotEvents()
+      else if (s && Array.isArray(s.events)) list = s.events
+      if (!Array.isArray(list) || !list.length) return ''
+      let sel = ''
+      for (const e of list) {
+        if (e && e.type === 'agent-preset/selected') {
+          const v = (e.data && e.data.agentPreset) || e.agentPreset
+          if (v) sel = String(v)   // 事件有序，保留最后一次选择
+        }
+      }
+      return sel
+    } catch (e) { return '' }
+  }
   function sessionPresetOf(agentOrSession) {
     try {
       const s = (agentOrSession && agentOrSession.session) || agentOrSession
+      // ① 选择事件优先（live 会话实时反映"创建后改预设"；0.1.2 起经 snapshotEvents）
+      const sel = lastPresetSelectedOf(s)
+      if (sel) return sel
+      // ② header/meta init 值兜底（无选择事件时即创建预设）
       if (s && s.header && s.header.agentPreset) return String(s.header.agentPreset)
       if (s && s.meta && s.meta.agentPreset) return String(s.meta.agentPreset)
     } catch (e) {}
@@ -396,16 +421,8 @@ export function createCore(ctx) {
       const sessions = ctx.get('sessions')
       if (sessions && sid) {
         const s = sessions.get(sid)
-        if (s && Array.isArray(s.events) && s.events.length) {
-          let sel = ''
-          for (const e of s.events) {
-            if (e && e.type === 'agent-preset/selected') {
-              const v = (e.data && e.data.agentPreset) || e.agentPreset
-              if (v) sel = String(v)
-            }
-          }
-          if (sel) return sel
-        }
+        const sel = lastPresetSelectedOf(s)
+        if (sel) return sel
       }
     } catch (e) {}
     // ② header 快路径（init 值）：DSH sessions 服务内存对象，不含文件 IO
