@@ -787,18 +787,6 @@ export function apply(ctx) {
     }
   }
 
-  function overviewDigest(entries) {
-    // digest 只覆盖“变更提醒”关注的用户级内容（用户画像/用户要求）：
-    // 这两块由 mm-profile 界面 / memory_add(kind=user_profile|user_requirements) 编辑，
-    // 会话内变化时需提醒一次；必要记忆/关键词/最近工作等仍随首轮总览一次性注入，
-    // 不参与会话内 diff（工作段频繁变化，若计入 digest 会每有新记录就重注入——v6 注释）。
-    const canonical = JSON.stringify({
-      userProfile: entries.userProfile,
-      userReqs: entries.userReqs,
-    })
-    return createHash('sha256').update(canonical).digest('hex')
-  }
-
   function renderOverview(entries) {
     const trackOn = !!(cfg().admin && cfg().admin.track)
     const lines = [
@@ -866,21 +854,26 @@ export function apply(ctx) {
     }
   }
 
-  function overviewDigestOfSource(source) {
-    const e = readOverview(source)
-    if (!e) return undefined
-    return overviewDigest({
-      userProfile: e.userProfile,
-      userReqs: e.userReqs,
-    })
+  // ── 总览注入状态（记忆文件持久化 bool 标记）─────────────────────────
+  // 设计（2026-09 用户定调）：
+  //   - 标记“该会话是否已完成首轮总览注入”以 bool 形式持久存于智能体活跃记忆文件
+  //     （active.<owner>.json → overviewInjected.<sid>.injected），另存用户画像/
+  //     用户要求各自内容哈希（p/r），用于判定“变没变、哪一块变了”。
+  //   - 注入前先查标记：设置开关关 → 不触发；标记已注入 → 不再注入；标记显示内容
+  //     变化 → 只补一次变更提醒；标记/状态读取不到 → 默认不执行任何注入
+  //     （防污染上下文与错误执行，fail-closed）。
+  //   - 子代理（subagent）会话一律不注入（减少干扰）。
+  // 注：renderOverview / renderOverviewDelta 的 source.entries 仍带 userProfile/
+  // userReqs 快照，供升级前存量会话“无标记但有会话内总览证据”时迁移采纳。
+  function sectionHash(text) {
+    return createHash('sha256').update(String(text || '')).digest('hex').slice(0, 16)
   }
 
   // DSH 0.1.2+ 会话事件访问适配：session.events 全量数组已移除
   // （27bf1039 "distinguish event seqs from log offsets" / 5660f44 "separate indexed
   // and snapshot log reads"），会话消息改经
   //   session.surface.nodes（可见消息 seq 有序表）+ session.eventAt(seq) 索引读取；
-  // 与 stable 内置插件（agent-instructions / tool-skill 的 catalogHistory）同一模式。
-  // 保留旧版 events 数组线性查找兜底（0.1.1 及更早）。
+  // 与 stable 内置插件（agent-instructions / tool-skill）同一模式；旧 events 数组兜底。
   function sessionSurfaceNodes(agent) {
     try {
       const s = agent && agent.session
@@ -902,66 +895,87 @@ export function apply(ctx) {
     } catch (e) {}
     return undefined
   }
-
-  // 会话内“已交付总览”检测：沿 surface 倒序找最近一条 motion-memory-overview 消息
-  // （DSH 0.1.2+ 中注入消息持久化为 user/message 并进入 surface，回放时出现在 claimed），
-  // 返回其持久化快照与 digest，供“每会话只提醒一次 / 内容变化后再提醒一次”判定。
-  function overviewHistory(agent) {
+  // 迁移用证据查询：surface 上是否已有 motion-memory-overview 消息（升级前注入过）。
+  // 返回 { found:true, userProfile, userReqs } / { found:false } / { unknown:true }（无法判定）
+  function overviewHistorySurface(agent) {
     try {
       const nodes = sessionSurfaceNodes(agent)
+      if (!nodes.length) return { found: false }
+      const s = agent && agent.session
+      const hasEventAt = !!(s && typeof s.eventAt === 'function')
+      const hasEvents = !!(s && Array.isArray(s.events))
+      let readAny = false
       for (let i = nodes.length - 1; i >= 0; i--) {
         const ev = sessionEventAt(agent, nodes[i])
-        if (!ev || ev.type !== 'user/message') continue
+        if (!ev) continue
+        readAny = true
+        if (ev.type !== 'user/message') continue
         const src = ev.data && ev.data.source
         if (!src || src.kind !== 'motion-memory-overview') continue
-        const snapshot = readOverview(src)
-        const digest = overviewDigestOfSource(src)
-        if (digest === undefined) continue
-        return { published: true, digest, snapshot }
+        const snap = readOverview(src)
+        if (!snap) continue
+        return { found: true, userProfile: snap.userProfile, userReqs: snap.userReqs }
       }
-    } catch (e) {}
-    // 旧版兜底：全量 events 数组扫描（0.1.1 及更早）
-    try {
-      const evs = agent && agent.session && agent.session.events
-      if (Array.isArray(evs)) {
-        for (let i = evs.length - 1; i >= 0; i--) {
-          const ev = evs[i]
-          const src = ev && ev.data && ev.data.source
-          if (!ev || ev.type !== 'user/message' || !src || src.kind !== 'motion-memory-overview') continue
-          const snapshot = readOverview(src)
-          const digest = overviewDigestOfSource(src)
-          if (digest === undefined) continue
-          return { published: true, digest, snapshot }
-        }
-      }
-    } catch (e) {}
-    return { published: false }
+      if (nodes.length && !readAny && !hasEventAt && !hasEvents) return { unknown: true }
+      return { found: false }
+    } catch (e) { return { unknown: true } }
   }
 
-  // 本步请求中回放的历史总览副本：内容已在会话历史里，剔除以免每步重复占用 token
-  function overviewClaims(messages) {
-    const out = []
+  // 子代理判别：session.header 携带 CreateSessionOptions.meta 的
+  // origin:'subagent' / parentSession（fork 血统）；无法读取/判定 → 按子代理处理（fail-closed）
+  function isSubagentSession(agent) {
     try {
-      for (const m of messages) {
-        if (m && m.source && m.source.kind === 'motion-memory-overview') out.push(m)
-      }
-    } catch (e) {}
-    return out
+      const s = agent && agent.session
+      if (!s) return true
+      const h = s.header
+      if (!h || typeof h !== 'object') return true
+      if (h.origin === 'subagent' || h.parentSession) return true
+      return false
+    } catch (e) { return true }
   }
 
-  // 变更提醒（用户画像/用户要求任一变化时注入一次，只列变化块）：
-  // source.entries 仍带当前全量快照 → 消息持久化后即成为新的“已交付基线”，不再重复提醒
-  function renderOverviewDelta(entries, prev) {
-    const lines = ['<system-reminder>', '运动记忆·总览更新（会话内变化，仅提醒一次）：']
+  // 持久标记读写（active.<owner>.json 的 overviewInjected 字段）：
+  //   readOverviewMark → { injected:false }（明确未注入）| { injected:true,p,r } | null（读取异常/不确定）
+  async function readOverviewMark(ownerKey, sid) {
+    try {
+      const { obj } = await readAgentActive(ownerKey || '')
+      const m = obj && obj.overviewInjected && obj.overviewInjected[sid]
+      if (m && m.injected) return { injected: true, p: String(m.p || ''), r: String(m.r || '') }
+      return { injected: false }
+    } catch (e) { return null }
+  }
+  async function writeOverviewMark(ownerKey, sid, entry) {
+    try {
+      const { obj, path } = await readAgentActive(ownerKey || '')
+      obj.overviewInjected = obj.overviewInjected || {}
+      obj.overviewInjected[sid] = { injected: true, at: nowIso(), p: entry.p || '', r: entry.r || '' }
+      // 裁剪：仅保留最近 400 个会话标记，防文件无限膨胀
+      const keys = Object.keys(obj.overviewInjected)
+      if (keys.length > 600) {
+        const drop = keys
+          .sort((a, b) => String(obj.overviewInjected[a].at || '').localeCompare(String(obj.overviewInjected[b].at || '')))
+          .slice(0, keys.length - 400)
+        for (const k of drop) delete obj.overviewInjected[k]
+      }
+      await writeJson(path, obj)
+      return true
+    } catch (e) { return false }
+  }
+
+  // 变更提醒：用户画像/用户要求任一变化时注入一次，只列变化块
+  function renderOverviewDelta(entries, mark) {
+    const lines = ['<system-reminder>', '运动记忆·总览更新（用户画像/用户要求变化，仅提醒一次）：']
     let changed = false
-    const push = (label, cur) => {
-      lines.push(label + '更新：' + (String(cur || '').trim() ? cur : '（已清空）'))
+    const curP = sectionHash(entries.userProfile)
+    const curR = sectionHash(entries.userReqs)
+    if (curP !== ((mark && mark.p) || '')) {
+      lines.push('用户画像更新：' + (String(entries.userProfile || '').trim() ? entries.userProfile : '（已清空）'))
       changed = true
     }
-    const prevProfile = (prev && prev.userProfile) || ''
-    const prevReqs = (prev && prev.userReqs) || ''
-    if (entries.userProfile !== prevProfile) push('用户画像', entries.userProfile)
-    if (entries.userReqs !== prevReqs) push('用户要求', entries.userReqs)
+    if (curR !== ((mark && mark.r) || '')) {
+      lines.push('用户要求更新：' + (String(entries.userReqs || '').trim() ? entries.userReqs : '（已清空）'))
+      changed = true
+    }
     if (!changed) return null
     lines.push('</system-reminder>')
     return createUserMessage({
@@ -982,9 +996,11 @@ export function apply(ctx) {
     })
   }
 
-  // 总览注入（DSH 0.1.2+ 适配）：完整总览每会话仅追加一次；会话内用户画像/用户要求
-  // 被编辑 → 只追加一次“变更提醒”（只列变化块，见 renderOverviewDelta）；无变化 → 静默。
-  // 历史回放的总览副本一律从本步请求剔除（内容已在会话历史，避免每步重复计费）。
+  // 首轮总览注入（fail-closed 四态判定）：
+  //   ① 开关关 → 不注入；② 子代理/无法确认主会话 → 不注入；
+  //   ③ 标记已注入且内容未变 → 不注入；标记已注入但画像/要求变化 → 只补一次变更提醒；
+  //   ④ 确定未注入（新会话）→ 注入一次完整总览；
+  //   标记/证据读取失败、状态不确定 → 静默（不注入不剔除，防污染上下文与错误执行）。
   ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
@@ -996,31 +1012,48 @@ export function apply(ctx) {
       await reloadConfigIfChanged().catch(() => {})  // 方案B：pre-step 前热重载配置
       maybeMigrate().catch(() => {})
       signal.throwIfAborted()
-      // 主开关：设置页「启用提示词注入」(cfg.inject=false) → 不再注入总览/变更提醒
-      const claims = overviewClaims(decision.messages)
-      if (cfg().inject === false) {
-        return claims.length ? { ...decision, messages: decision.messages.filter(m => !claims.includes(m)) } : decision
-      }
+      // ① 设置开关「启用提示词注入」关闭 → 不触发
+      if (cfg().inject === false) return decision
+      // ② 子代理会话 / 无法确认主会话 → 不注入（减少干扰）
+      if (isSubagentSession(agent)) return decision
+      // ③ 归属键：无智能体归属（游离会话）→ 不注入
       const ownerKey = (await ownerKeyOfAsync(sid)) || ownerKeyOf(agent)
-      // 子会话/无智能体归属：不注入记忆总览（省 token；需要时自行调 memory_query）
-      if (!ownerKey) return claims.length ? { ...decision, messages: decision.messages.filter(m => !claims.includes(m)) } : decision
+      if (!ownerKey) return decision
       if (ownerKey) await mergeLegacyOwners(ownerKey).catch(() => {})
       const entries = await overviewEntries(sid, ownerKey || sid)
-      const history = overviewHistory(agent)
-      // 剔除本步回放的历史总览副本
-      let base = decision
-      if (claims.length) base = { ...decision, messages: decision.messages.filter(m => !claims.includes(m)) }
-      // 尚未注入过 → 追加完整总览（每会话仅一次；空记忆也携带使用指引）
-      if (!history.published) {
-        return { kind: 'enter', messages: [...base.messages, renderOverview(entries)] }
+      const curP = sectionHash(entries.userProfile)
+      const curR = sectionHash(entries.userReqs)
+      // ④ 持久标记判定
+      const mark = await readOverviewMark(ownerKey, sid)
+      if (mark === null) return decision          // 不确定 → 静默
+      if (mark.injected) {
+        // 已注入且内容未变 → 不再注入
+        if (mark.p === curP && mark.r === curR) return decision
+        // 已注入但用户画像/用户要求变化 → 只补一次变更提醒（先更新标记，成功后才注入）
+        const ok = await writeOverviewMark(ownerKey, sid, { p: curP, r: curR })
+        if (!ok) return decision
+        const note = renderOverviewDelta(entries, mark)
+        if (!note) return decision
+        return { kind: 'enter', messages: [...decision.messages, note] }
       }
-      // 已注入过：用户画像/用户要求变化 → 一次变更提醒；未变化 → 静默
-      const curDigest = overviewDigest(entries)
-      if (history.digest !== curDigest) {
-        const note = renderOverviewDelta(entries, history.snapshot)
-        if (note) return { kind: 'enter', messages: [...base.messages, note] }
+      // ⑤ 未注入：升级前存量会话若 surface 已有总览消息 → 采纳为“已注入”，不重复注入
+      const evidence = overviewHistorySurface(agent)
+      if (evidence.unknown) return decision       // 无法判定 → 静默
+      if (evidence.found) {
+        const ok = await writeOverviewMark(ownerKey, sid, {
+          p: sectionHash(evidence.userProfile || ''),
+          r: sectionHash(evidence.userReqs || ''),
+        })
+        if (!ok) return decision
+        // 与旧总览快照相比有画像/要求变化 → 补一次变更提醒
+        const note = renderOverviewDelta(entries, { p: sectionHash(evidence.userProfile || ''), r: sectionHash(evidence.userReqs || '') })
+        if (note) return { kind: 'enter', messages: [...decision.messages, note] }
+        return decision
       }
-      return base
+      // ⑥ 确定未注入（新会话/空 surface）→ 注入一次完整总览；标记写成功后才注入
+      const ok = await writeOverviewMark(ownerKey, sid, { p: curP, r: curR })
+      if (!ok) return decision
+      return { kind: 'enter', messages: [...decision.messages, renderOverview(entries)] }
     } catch (e) {
       return decision
     }
@@ -1041,6 +1074,8 @@ export function apply(ctx) {
     if (decision.kind === 'reject') return decision
     // 主开关关闭（cfg.inject=false）→ 变更 diff 注入一并停止
     if (cfg().inject === false) return decision
+    // 子代理会话不注入变更通知（减少干扰）
+    if (isSubagentSession(agent)) return decision
     try {
       state.diffQueue = state.diffQueue || []
       // 过滤掉本会话自己触发的（出队丢弃），其余合并
