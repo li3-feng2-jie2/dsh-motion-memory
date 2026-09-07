@@ -666,6 +666,7 @@ export function apply(ctx) {
     const d = (event && event.data) || {}
     if (event.type === 'turn/start') {
       state.currentTurn.set(sid, d.turn || 0)
+      if (state.currentStep) state.currentStep.delete(sid)
     } else if (event.type === 'turn/end') {
       state.turnEvents++
       state.currentTurn.set(sid, d.turn || 0)
@@ -677,6 +678,12 @@ export function apply(ctx) {
         if (preset) ownerKey = 'preset:' + preset
       } catch (e) {}
       maybeMigrate().then(() => writeActive(sid, d.turn || 0, Object.assign({ summarize: false }, ownerKey ? { ownerKey } : {}))).catch(() => {})
+    } else if (event.type === 'step/start' || event.type === 'step/end') {
+      // step 追踪（工具溯源用；DSH 0.1.2+ 移除 session.events，改由事件流实时维护）
+      if (!state.currentStep) state.currentStep = new Map()
+      if (d && (d.turn === undefined || d.turn === state.currentTurn.get(sid))) {
+        state.currentStep.set(sid, Number(d.step) || 0)
+      }
     }
   })
   ctx.on('agent/request', (payload, next) => {
@@ -781,16 +788,13 @@ export function apply(ctx) {
   }
 
   function overviewDigest(entries) {
-    // digest 只含低频变化内容：必要记忆 + 重要记忆标题 + 活跃关键词 + 隔离状态。
-    // 最近会话工作不参与 digest——工作段频繁变化（对话跟踪等），若计入会导致
-    // 每有新记录就重注入总览。需要最新记录时 agent 自行调 memory_query。
+    // digest 只覆盖“变更提醒”关注的用户级内容（用户画像/用户要求）：
+    // 这两块由 mm-profile 界面 / memory_add(kind=user_profile|user_requirements) 编辑，
+    // 会话内变化时需提醒一次；必要记忆/关键词/最近工作等仍随首轮总览一次性注入，
+    // 不参与会话内 diff（工作段频繁变化，若计入 digest 会每有新记录就重注入——v6 注释）。
     const canonical = JSON.stringify({
-      necessary: entries.necessary,
       userProfile: entries.userProfile,
       userReqs: entries.userReqs,
-      important: entries.important,
-      keywords: entries.keywords || [],
-      incidentId: entries.incident ? entries.incident.id : null,
     })
     return createHash('sha256').update(canonical).digest('hex')
   }
@@ -834,6 +838,8 @@ export function apply(ctx) {
         form: 'catalog',
         entries: {
           necessary: entries.necessary,
+          userProfile: entries.userProfile,
+          userReqs: entries.userReqs,
           important: entries.important,
           recent: [],
           keywords: entries.keywords || [],
@@ -851,6 +857,8 @@ export function apply(ctx) {
     for (const t of e.important) if (!t || typeof t.title !== 'string') return undefined
     return {
       necessary: e.necessary,
+      userProfile: typeof e.userProfile === 'string' ? e.userProfile : '',
+      userReqs: typeof e.userReqs === 'string' ? e.userReqs : '',
       important: e.important,
       recent: e.recent,
       keywords: Array.isArray(e.keywords) ? e.keywords.map(String) : [],
@@ -862,41 +870,121 @@ export function apply(ctx) {
     const e = readOverview(source)
     if (!e) return undefined
     return overviewDigest({
-      necessary: e.necessary,
-      important: e.important,
-      keywords: e.keywords,
-      incident: e.incidentId ? { id: e.incidentId } : null,
+      userProfile: e.userProfile,
+      userReqs: e.userReqs,
     })
   }
 
-  function overviewHistory(agent) {
+  // DSH 0.1.2+ 会话事件访问适配：session.events 全量数组已移除
+  // （27bf1039 "distinguish event seqs from log offsets" / 5660f44 "separate indexed
+  // and snapshot log reads"），会话消息改经
+  //   session.surface.nodes（可见消息 seq 有序表）+ session.eventAt(seq) 索引读取；
+  // 与 stable 内置插件（agent-instructions / tool-skill 的 catalogHistory）同一模式。
+  // 保留旧版 events 数组线性查找兜底（0.1.1 及更早）。
+  function sessionSurfaceNodes(agent) {
     try {
-      const visible = new Set(agent.session.surface.nodes)
-      const events = agent.session.events
-      let published = false
-      for (let i = events.length - 1; i >= 0; i--) {
-        const ev = events[i]
-        const src = ev && ev.data && ev.data.source
-        if (ev.type !== 'user/message' || !src || src.kind !== 'motion-memory-overview') continue
-        const digest = overviewDigestOfSource(src)
-        if (digest === undefined) continue
-        published = true
-        if (visible.has(ev.seq)) return { visibleDigest: digest, published }
-      }
-      return { published }
-    } catch (e) {
-      return { published: false }
-    }
+      const s = agent && agent.session
+      const nodes = s && s.surface && Array.isArray(s.surface.nodes) ? s.surface.nodes : []
+      return nodes
+    } catch (e) { return [] }
   }
-
-  function overviewMessage(messages) {
-    for (const m of messages) {
-      const digest = overviewDigestOfSource(m.source)
-      if (digest !== undefined) return { message: m, digest }
-    }
+  function sessionEventAt(agent, seq) {
+    try {
+      const s = agent && agent.session
+      if (!s) return undefined
+      if (typeof s.eventAt === 'function') return s.eventAt(seq)
+      if (Array.isArray(s.events)) {
+        for (let i = s.events.length - 1; i >= 0; i--) {
+          const e = s.events[i]
+          if (e && e.seq === seq) return e
+        }
+      }
+    } catch (e) {}
     return undefined
   }
 
+  // 会话内“已交付总览”检测：沿 surface 倒序找最近一条 motion-memory-overview 消息
+  // （DSH 0.1.2+ 中注入消息持久化为 user/message 并进入 surface，回放时出现在 claimed），
+  // 返回其持久化快照与 digest，供“每会话只提醒一次 / 内容变化后再提醒一次”判定。
+  function overviewHistory(agent) {
+    try {
+      const nodes = sessionSurfaceNodes(agent)
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const ev = sessionEventAt(agent, nodes[i])
+        if (!ev || ev.type !== 'user/message') continue
+        const src = ev.data && ev.data.source
+        if (!src || src.kind !== 'motion-memory-overview') continue
+        const snapshot = readOverview(src)
+        const digest = overviewDigestOfSource(src)
+        if (digest === undefined) continue
+        return { published: true, digest, snapshot }
+      }
+    } catch (e) {}
+    // 旧版兜底：全量 events 数组扫描（0.1.1 及更早）
+    try {
+      const evs = agent && agent.session && agent.session.events
+      if (Array.isArray(evs)) {
+        for (let i = evs.length - 1; i >= 0; i--) {
+          const ev = evs[i]
+          const src = ev && ev.data && ev.data.source
+          if (!ev || ev.type !== 'user/message' || !src || src.kind !== 'motion-memory-overview') continue
+          const snapshot = readOverview(src)
+          const digest = overviewDigestOfSource(src)
+          if (digest === undefined) continue
+          return { published: true, digest, snapshot }
+        }
+      }
+    } catch (e) {}
+    return { published: false }
+  }
+
+  // 本步请求中回放的历史总览副本：内容已在会话历史里，剔除以免每步重复占用 token
+  function overviewClaims(messages) {
+    const out = []
+    try {
+      for (const m of messages) {
+        if (m && m.source && m.source.kind === 'motion-memory-overview') out.push(m)
+      }
+    } catch (e) {}
+    return out
+  }
+
+  // 变更提醒（用户画像/用户要求任一变化时注入一次，只列变化块）：
+  // source.entries 仍带当前全量快照 → 消息持久化后即成为新的“已交付基线”，不再重复提醒
+  function renderOverviewDelta(entries, prev) {
+    const lines = ['<system-reminder>', '运动记忆·总览更新（会话内变化，仅提醒一次）：']
+    let changed = false
+    const push = (label, cur) => {
+      lines.push(label + '更新：' + (String(cur || '').trim() ? cur : '（已清空）'))
+      changed = true
+    }
+    const prevProfile = (prev && prev.userProfile) || ''
+    const prevReqs = (prev && prev.userReqs) || ''
+    if (entries.userProfile !== prevProfile) push('用户画像', entries.userProfile)
+    if (entries.userReqs !== prevReqs) push('用户要求', entries.userReqs)
+    if (!changed) return null
+    lines.push('</system-reminder>')
+    return createUserMessage({
+      content: [{ type: 'text', text: lines.join('\n') }],
+      source: {
+        kind: 'motion-memory-overview',
+        form: 'catalog',
+        entries: {
+          necessary: entries.necessary,
+          userProfile: entries.userProfile,
+          userReqs: entries.userReqs,
+          important: entries.important,
+          recent: [],
+          keywords: entries.keywords || [],
+          incidentId: entries.incident ? entries.incident.id : null,
+        },
+      },
+    })
+  }
+
+  // 总览注入（DSH 0.1.2+ 适配）：完整总览每会话仅追加一次；会话内用户画像/用户要求
+  // 被编辑 → 只追加一次“变更提醒”（只列变化块，见 renderOverviewDelta）；无变化 → 静默。
+  // 历史回放的总览副本一律从本步请求剔除（内容已在会话历史，避免每步重复计费）。
   ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
@@ -908,23 +996,31 @@ export function apply(ctx) {
       await reloadConfigIfChanged().catch(() => {})  // 方案B：pre-step 前热重载配置
       maybeMigrate().catch(() => {})
       signal.throwIfAborted()
-      // 只注入一次：本会话已发布过总览 → 永不再注入。
-      // 后续有需求由 agent 自行调用 memory_query / memory（cmd=recall_past / recent）。
-      const history = overviewHistory(agent)
-      if (history.published) return decision
-      const existing = overviewMessage(decision.messages)
-      if (existing !== undefined) return decision
+      // 主开关：设置页「启用提示词注入」(cfg.inject=false) → 不再注入总览/变更提醒
+      const claims = overviewClaims(decision.messages)
+      if (cfg().inject === false) {
+        return claims.length ? { ...decision, messages: decision.messages.filter(m => !claims.includes(m)) } : decision
+      }
       const ownerKey = (await ownerKeyOfAsync(sid)) || ownerKeyOf(agent)
       // 子会话/无智能体归属：不注入记忆总览（省 token；需要时自行调 memory_query）
-      if (!ownerKey) return decision
+      if (!ownerKey) return claims.length ? { ...decision, messages: decision.messages.filter(m => !claims.includes(m)) } : decision
       if (ownerKey) await mergeLegacyOwners(ownerKey).catch(() => {})
       const entries = await overviewEntries(sid, ownerKey || sid)
-      // 无记忆也注入（携带使用指引，引导新会话产生记忆）——空总览不再是噪音
-      const overview = renderOverview(entries)
-      return {
-        kind: 'enter',
-        messages: [...decision.messages, overview],
+      const history = overviewHistory(agent)
+      // 剔除本步回放的历史总览副本
+      let base = decision
+      if (claims.length) base = { ...decision, messages: decision.messages.filter(m => !claims.includes(m)) }
+      // 尚未注入过 → 追加完整总览（每会话仅一次；空记忆也携带使用指引）
+      if (!history.published) {
+        return { kind: 'enter', messages: [...base.messages, renderOverview(entries)] }
       }
+      // 已注入过：用户画像/用户要求变化 → 一次变更提醒；未变化 → 静默
+      const curDigest = overviewDigest(entries)
+      if (history.digest !== curDigest) {
+        const note = renderOverviewDelta(entries, history.snapshot)
+        if (note) return { kind: 'enter', messages: [...base.messages, note] }
+      }
+      return base
     } catch (e) {
       return decision
     }
@@ -943,6 +1039,8 @@ export function apply(ctx) {
   ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
+    // 主开关关闭（cfg.inject=false）→ 变更 diff 注入一并停止
+    if (cfg().inject === false) return decision
     try {
       state.diffQueue = state.diffQueue || []
       // 过滤掉本会话自己触发的（出队丢弃），其余合并
@@ -1065,18 +1163,10 @@ export function apply(ctx) {
             if (sel) { modelProvider = String(sel.provider || ''); modelName = String(sel.model || '') }
           }
         } catch (e) {}
-        // 调用定位（v5）：从 agent 内存事件流取当前 turn 的最后 step，供历史记录溯源
+        // 调用定位（v6/DSH 0.1.2+）：session.events 已移除，step 改由 session/event 流
+        // 内 step/start·step/end 实时维护（state.currentStep），此处直接读取
         let step = 0
-        try {
-          const evs = agent && agent.session && agent.session.events
-          if (Array.isArray(evs)) {
-            for (let i = evs.length - 1; i >= 0; i--) {
-              const e = evs[i]
-              const d = e && e.data
-              if (e.type === 'step/start' && d && d.turn === turn) { step = Number(d.step) || 0; break }
-            }
-          }
-        } catch (e) {}
+        try { if (state.currentStep && state.currentStep.has(session)) step = state.currentStep.get(session) || 0 } catch (e) {}
         try {
           if (agentId.indexOf('preset:') === 0) await mergeLegacyOwners(agentId).catch(() => {})
           return await run(args || {}, { session, turn, step, agent: agentId, _execAgent: agent, modelProvider, modelName, toolContext: name })
