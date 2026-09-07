@@ -2,7 +2,7 @@
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话中值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
-> ⚠️ **DSH 版本适配说明**：v0.4.0 针对 DSH **0.1.2-alpha.1** 适配（会话日志 `agentPreset` 字段格式、`ctx.fs` 接口、`DSH_HOME` 环境变量等）。**旧版本（≤ v0.3.3）按旧 DSH 设计，在 DSH 0.1.2+ 下不保证正常运行**——已确认失效点：会话归属解析（记忆页会话列表只显示当前会话）、轮次总结查询、会话日志帧级读取（轮次范围/标题）。**升级 DSH 后请务必同步升级本插件到 v0.4.0+。**
+> ⚠️ **DSH 版本适配说明**：v0.4.5 适配 DSH **0.1.2-rc.1**（[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)，release commit `a66e470204`）。关键接口基准：① 会话消息读取 = `session.surface.nodes`（可见消息 seq）+ `session.eventAt(seq)` 索引（0.1.2 起**移除 `session.events` 全量数组**）；② `agent/pre-step` payload `{ agent, messages, turn, step, signal }`，决策 `PreStepDecision { kind:'enter', messages }`；③ session 元数据经 `session.header`（cwd / parentSession / origin:'subagent' / agentPreset）。**DSH 目前仍处高强度破坏性迭代期，接口可能继续更换**：升级 DSH 前请先核对上述接口是否变化（或等本插件发布对应适配版本），勿用旧适配版强行运行；≤ v0.3.3 按旧 DSH 设计，在 0.1.2+ 下不保证正常运行。
 
 ## 特性
 

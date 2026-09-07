@@ -30,7 +30,7 @@
         "motion-memory-modules/write.mjs": "sha256:0eca587454a0eb4daf53089eb0e381d3495d4038884db42a74919e87198c5ae6",
         "motion-memory.js": "sha256:7e2c6aef5c0f492211f551a090c79624d6d45d73bcee942f8041700d63ca8248",
         "package.json": "sha256:ba7014445783cde459ec7a450b7d475684da706ce77f5a047c8c06c8f47c5870",
-        "README.md": "sha256:1c1b1753ddf8439bff0405db7c481b9c8183196d2203d38f11791021daee9bb1",
+        "README.md": "sha256:af0bd24ecf8f43192f15240d83e3bfb025a4b4b04dde651eeec52208d069800e",
         "SETTINGS.md": "sha256:17384773f0d15ca4d987dc78f85f1085aca7020883036181240f81adb7975d14"
     }
 }
