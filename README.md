@@ -1,8 +1,8 @@
-# 运动记忆（Motion Memory）v0.4.5
+# 运动记忆（Motion Memory）v0.4.6
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话中值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
-> ⚠️ **DSH 版本适配说明**：v0.4.5 适配 DSH **0.1.2-rc.1**（[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)，release commit `a66e470204`）。关键接口基准：① 会话消息读取 = `session.surface.nodes`（可见消息 seq）+ `session.eventAt(seq)` 索引（0.1.2 起**移除 `session.events` 全量数组**）；② `agent/pre-step` payload `{ agent, messages, turn, step, signal }`，决策 `PreStepDecision { kind:'enter', messages }`；③ session 元数据经 `session.header`（cwd / parentSession / origin:'subagent' / agentPreset）。**DSH 目前仍处高强度破坏性迭代期，接口可能继续更换**：升级 DSH 前请先核对上述接口是否变化（或等本插件发布对应适配版本），勿用旧适配版强行运行；≤ v0.3.3 按旧 DSH 设计，在 0.1.2+ 下不保证正常运行。
+> ⚠️ **DSH 版本适配说明**：v0.4.6 适配 DSH **0.1.2-rc.1**（[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)，release commit `a66e470204`）。关键接口基准：① 会话消息读取 = `session.surface.nodes`（可见消息 seq）+ `session.eventAt(seq)` 索引（0.1.2 起**移除 `session.events` 全量数组**，live 会话事件读取经 `session.snapshotEvents()`）；② `agent/pre-step` payload `{ agent, messages, turn, step, signal }`，决策 `PreStepDecision { kind:'enter', messages }`；③ session 元数据经 `session.header`（cwd / parentSession / origin:'subagent' / agentPreset）。**DSH 目前仍处高强度破坏性迭代期，接口可能继续更换**：升级 DSH 前请先核对上述接口是否变化（或等本插件发布对应适配版本），勿用旧适配版强行运行；≤ v0.3.3 按旧 DSH 设计，在 0.1.2+ 下不保证正常运行。
 
 ## 特性
 
@@ -75,7 +75,7 @@ mklink /J "<你的profile>\node_modules\mm-settings" "<你的profile>\plugins\mo
 
 ## 版本与更新
 
-- **当前版本**：v0.4.5（修复：适配 DSH 0.1.2+ 会话事件接口变更——`session.events` 移除改 `surface.nodes + eventAt(seq)` 索引读取；首轮总览注入改**记忆文件持久 bool 标记**（每会话一次、画像/要求变化仅提醒一次、开关关不触发、子代理会话不注入、状态不确定静默 fail-closed））
+- **当前版本**：v0.4.6（修复：新建会话智能体归属识别失效——DSH 0.1.2+ 移除 `session.events` 数组后 live 会话事件扫描落空，新建会话（GUI 先以默认 cordis 建档、随后 `agent-preset/selected` 写入真实预设）被误判为 cordis，首轮总览注入/记忆归属固定到错误智能体。修复：live 会话事件读取改经 `session.snapshotEvents()`（旧 `.events` 数组兜底），`agent-preset/selected` 选择事件优先于 header 创建初值）
 - **git 安装（推荐）**：插件启动后自动检查更新（启动 8 秒后一次 + 每 12 小时一次）。有新版时：
   - 设置页 →「运动记忆」→「版本与更新」→ 点「检查更新」查看，点「更新」拉取，**重启 DSH 生效**；
   - 或命令：`memory cmd=update`（检查） / `memory cmd=update action=apply`（更新）。
