@@ -5,6 +5,11 @@
 // 设计（2026-09 用户定调）：两份文件可编辑即可——不做历史记录展示、不做专门超期归档；
 // 首轮总览注入由 motion-memory 侧处理（bool: injectUserProfile / injectUserReqs）。
 
+// DSH 0.1.5：connection.rpc.handle 从插件侧调用必抛
+// "cannot get property webServer without inject"，改由本模块直接注册 webServer 路由
+// 并复刻 client-request/server-response 协议（详见模块头注释）。
+import { registerRpcChannel } from '../motion-memory-modules/rpc-route.mjs'
+
 export const name = 'mm-profile'
 export const inject = ['fs', 'connection', 'motionMemoryApi']
 
@@ -40,15 +45,13 @@ export function apply(ctx) {
     }
   }
 
-  const connection = ctx.get('connection')
-  if (connection && connection.rpc && connection.rpc.handle) {
-    connection.rpc.handle('/mmprofile', async (endpoint, payload) => {
-      try {
-        const result = await handle(endpoint, payload)
-        return { ok: true, value: result }
-      } catch (e) {
-        return { ok: true, value: { ok: false, text: 'mm-profile 处理失败：' + String((e && e.message) || e) } }
-      }
-    }, { authority: 'loopback' })
-  }
+  // 注册 RPC channel /mmprofile（信任栅栏沿用 connection.requestRejection：Host 白名单 + 浏览器认证）
+  registerRpcChannel(ctx, '/mmprofile', async (endpoint, payload) => {
+    try {
+      const result = await handle(endpoint, payload)
+      return { ok: true, value: result }
+    } catch (e) {
+      return { ok: true, value: { ok: false, text: 'mm-profile 处理失败：' + String((e && e.message) || e) } }
+    }
+  })
 }

@@ -7,13 +7,19 @@
 // 不受会话文件沙箱限制；记忆文件操作仍走 ctx.fs（沙箱）。
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+// DSH 0.1.5：connection.rpc.handle 从插件侧调用必抛
+// "cannot get property webServer without inject"，改由本模块直接注册 webServer 路由
+// 并复刻 client-request/server-response 协议（详见模块头注释）。
+import { registerRpcChannel } from '../motion-memory-modules/rpc-route.mjs'
 
 export const name = 'mm-settings'
 export const inject = ['fs', 'connection', 'motionMemoryApi']
 
 export function apply(ctx) {
   const fs = ctx.fs
-  const connection = ctx.connection
+  // 注：connection 不再在此闭包直接使用——RPC channel 由 registerRpcChannel 自己取
+  // （见模块顶部注释与 motion-memory-modules/rpc-route.mjs），`inject` 里保留 'connection'
+  // 只是让本插件等 connection 就绪后再激活。
   const state = { sessionCwd: '', lastSid: '' }
   // 记忆数据版本号：任何写盘（本插件写操作 / motion-memory 写事件）都 +1；
   // 页面切换时查版本对比——变了才重新查询，没变直接用页面内存缓存（数据常驻、秒切）
@@ -1673,22 +1679,20 @@ export function apply(ctx) {
     }
   }
 
-  // 注册 connection channel /mmsettings（loopback 信任）
-  if (connection && connection.rpc && connection.rpc.handle) {
-    connection.rpc.handle('/mmsettings', async (endpoint, payload) => {
-      try {
-        const result = await handle(endpoint, payload)
-        // 记忆写操作成功后清空会话列表/轮次列表缓存（下次读取重新扫描）
-        if (result && result.ok && ['mm-turn-save', 'mm-keyword-save', 'mm-keyword-del', 'mm-active-save', 'mm-period-save'].indexOf(endpoint) >= 0) {
-          state.mmCache = {}
-          broadcastDataChanged({ source: endpoint })
-        }
-        return { ok: true, value: result }
-      } catch (e) {
-        return { ok: true, value: { ok: false, text: 'mm-settings 处理失败：' + String((e && e.message) || e) } }
+  // 注册 RPC channel /mmsettings（信任栅栏沿用 connection.requestRejection：Host 白名单 + 浏览器认证）
+  registerRpcChannel(ctx, '/mmsettings', async (endpoint, payload) => {
+    try {
+      const result = await handle(endpoint, payload)
+      // 记忆写操作成功后清空会话列表/轮次列表缓存（下次读取重新扫描）
+      if (result && result.ok && ['mm-turn-save', 'mm-keyword-save', 'mm-keyword-del', 'mm-active-save', 'mm-period-save'].indexOf(endpoint) >= 0) {
+        state.mmCache = {}
+        broadcastDataChanged({ source: endpoint })
       }
-    }, { authority: 'loopback' })
-  }
+      return { ok: true, value: result }
+    } catch (e) {
+      return { ok: true, value: { ok: false, text: 'mm-settings 处理失败：' + String((e && e.message) || e) } }
+    }
+  })
 
   // ── 记忆数据变更通知（页面缓存失效）：motion-memory 写盘 → 事件 → 清缓存 + SSE 推页面 ──
   // 页面（client.js）用 EventSource 订阅 /mmsettings/events，收到 data-changed 后清对应页前端缓存，

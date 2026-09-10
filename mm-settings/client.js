@@ -1024,11 +1024,7 @@ function MemoryView(props) {
   var turns = React.useState(null)
   var turnsV = turns[0]
   var setTurns = turns[1]
-  // 轮次总结分页（无限滚动）：hasMore/nextOffset/loading；TURNS_PAGE=每页条数
-  var TURNS_PAGE = 50
-  var turnsPageS = React.useState({ hasMore: false, nextOffset: 0, loading: false })
-  var turnsPage = turnsPageS[0]
-  var setTurnsPage = turnsPageS[1]
+  // 轮次总结：当前/聚焦会话的轮次一次加载（原"全部会话"分页状态已随该视图移除）
   var kws = React.useState(null)
   var kwsV = kws[0]
   var setKws = kws[1]
@@ -1343,10 +1339,6 @@ function MemoryView(props) {
   function popupPush(item) { setPopup(function (prev) { return (prev || []).concat([item]) }) }
   function popupPop() { setPopup(function (prev) { return (prev && prev.length > 1) ? prev.slice(0, -1) : [] }) }
   function popupClear() { setPopup([]) }
-  // 轮次页会话范围：false=仅当前窗口会话（默认），true=全部会话
-  var scopeAll = React.useState(false)
-  var scopeAllV = scopeAll[0]
-  var setScopeAll = scopeAll[1]
   // 会话轮次页：未归档会话列表
   var sessions = React.useState(null)
   var sessionsV = sessions[0]
@@ -1399,11 +1391,8 @@ function MemoryView(props) {
   var cfgState = React.useState(null)
   var cfgV = cfgState[0]
   var setCfgV = cfgState[1]
-  // 会话记忆页时间范围是否已按"全局最新~最旧"初始化（避免用户手动清空后被反复填充）
-  // 会话记忆页时间范围是否已按"全局最新~最旧"初始化（避免用户手动清空后被反复填充）
-  var rangeInitRef = React.useRef(false)
   // 会话记忆页全量时间范围（host globalRange：所有会话已知最旧~最新，不受当前窗口过滤影响）——
-  // 供时间条做 min/max 下限（用户可查任意历史区间，列表默认只显示最近 72h）
+  // 供时间条做 min/max 下限；列表默认不设时间窗（加载全部未归档），需要时可手动收窄
   var globalRangeS = React.useState(null)
   var globalRangeV = globalRangeS[0]
   var setGlobalRange = globalRangeS[1]
@@ -1424,23 +1413,21 @@ function MemoryView(props) {
     var p = Promise.resolve()
     // 时间范围：'YYYY-MM-DD' → 毫秒（from=当天0点，to=当天23:59:59）；opts 可显式传（onChange 里 state 未更新）
     // 会话记忆页首次打开（未初始化时间窗）默认最近 72 小时：先带默认窗口查询，再补 UI 时间条（避免先全量后缩窗）
-    var sessDefault72 = (t === 'sessions' && !focusSidV && !rangeInitRef.current && !timeFromV && !timeToV)
-    var sessF72 = sessDefault72 ? Date.now() - 72 * 3600000 : 0
-    var fMs = opts && opts.fromMs !== undefined ? opts.fromMs : (timeFromV ? new Date(timeFromV + 'T00:00:00').getTime() : (sessF72 || 0))
-    var tMs = opts && opts.toMs !== undefined ? opts.toMs : (timeToV ? new Date(timeToV + 'T23:59:59').getTime() : (sessDefault72 ? Date.now() : 0))
+    // 默认不设时间窗：直接加载全部（未归档）；需要缩小范围时用顶部时间条
+    var fMs = opts && opts.fromMs !== undefined ? opts.fromMs : (timeFromV ? new Date(timeFromV + 'T00:00:00').getTime() : 0)
+    var tMs = opts && opts.toMs !== undefined ? opts.toMs : (timeToV ? new Date(timeToV + 'T23:59:59').getTime() : 0)
     // 强制刷新时先清空对应页数据 → 显示"加载中"；缓存命中（非 force）不动现有数据
     if (t === 'turns') setTurns(force ? null : turnsV)
     if (t === 'sessions') { if (focusSidV) setTurns(force ? null : turnsV); else setSessions(force ? null : sessionsV) }
     if (t === 'kws') setKws(force ? null : kwsV)
     if (t === 'active') setActive(force ? null : activeV)
     if (t === 'periods') setPeriods(force ? null : periodsV)
-    // 轮次总结：全部会话视图分页（首屏最新 50 条，滚动加载更旧）；当前会话/聚焦会话不分页（数据量小）
+    // 轮次总结：一次加载当前/聚焦会话的全部轮次（数据量小，不分页）
     if (t === 'turns') {
-      var paginate = !focusSidV && scopeAllV
-      p = callHost('mm-turn-list', { sid: focusSidV || (scopeAllV ? '' : (sessionId || '')), from: 0, to: 0, includeArchive: searchArchV, force: force, offset: 0, limit: paginate ? TURNS_PAGE : 0 }).then(function (r) {
+      // 只取当前/聚焦会话的全部轮次（一次性加载，不再分页）
+      p = callHost('mm-turn-list', { sid: focusSidV || (sessionId || ''), from: 0, to: 0, includeArchive: searchArchV, force: force, offset: 0, limit: 0 }).then(function (r) {
         if (mySeq !== reqSeqRef.current) return
         setTurns((r && r.items) || [])
-        setTurnsPage({ hasMore: !!(r && r.hasMore), nextOffset: (r && r.nextOffset) || 0, loading: false, total: (r && r.total) || 0 })
         setTurnRange((r && r.turnRange) || null); setTrackMetaMap((r && r.trackMetaMap) || {})
       })
     }
@@ -1453,15 +1440,6 @@ function MemoryView(props) {
         // 全量时间范围（不受窗口过滤）：供时间条下限——用户可查任意历史区间
         var gr = r && r.globalRange
         if (gr && gr.from && gr.to) setGlobalRange({ from: gr.from, to: gr.to })
-        // 首次打开会话记忆页时，默认时间窗口 = 最近 72 小时（快速看"最近做了什么"）；
-        // 更久远的时间用顶部时间条选择；"全部"按钮清空限制查全部
-        if (!rangeInitRef.current) {
-          rangeInitRef.current = true
-          var nowT = new Date()
-          var d3 = new Date(nowT.getTime() - 72 * 3600000)
-          setTimeFrom(d3.toISOString().slice(0, 10))
-          setTimeTo(nowT.toISOString().slice(0, 10))
-        }
       })
     }
     if (t === 'kws') {
@@ -1511,18 +1489,7 @@ function MemoryView(props) {
     })
     p.catch(function (e) { if (mySeq === reqSeqRef.current) setMsg('加载失败: ' + String((e && e.message) || e)) }).finally(function () { if (mySeq === reqSeqRef.current) setBusy(false) })
   }
-  // 轮次总结页：滚动触底加载更旧一页（移动端式无限滚动；仅全部会话视图分页）
-  function loadMoreTurns() {
-    if (focusSidV || !scopeAllV) return
-    if (!turnsPage.hasMore || turnsPage.loading) return
-    setTurnsPage(Object.assign({}, turnsPage, { loading: true }))
-    var seq = reqSeqRef.current
-    callHost('mm-turn-list', { sid: '', from: 0, to: 0, includeArchive: searchArchV, force: false, offset: turnsPage.nextOffset, limit: TURNS_PAGE }).then(function (r) {
-      if (seq !== reqSeqRef.current) return  // 期间已切页/刷新 → 丢弃
-      setTurns(function (prev) { return (prev || []).concat((r && r.items) || []) })
-      setTurnsPage({ hasMore: !!(r && r.hasMore), nextOffset: (r && r.nextOffset) || 0, loading: false })
-    }).catch(function () { setTurnsPage(Object.assign({}, turnsPage, { loading: false })) })
-  }
+  // 轮次总结页：一次性加载当前/聚焦会话的全部轮次（原"全部会话"分页视图已移除）
   // 保存轮次总结编辑（编辑已有或新增缺失轮次）；失焦自动保存与保存按钮共用
   function saveTurnEdit() {
     var es = editState
@@ -1565,7 +1532,7 @@ function MemoryView(props) {
   }, [tabV])
   // 会话/范围/焦点变化：数据源变了，强制重新查询（新会话/新筛选 = 全新数据，版本重置）
   React.useEffect(function () { dataVersionRef.current = 0 }, [sessionId])
-  React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [sessionId, scopeAllV, timeFromV, timeToV, searchArchV, focusSidV, editState])
+  React.useEffect(function () { if (!editState) refreshTab(tabV, true) }, [sessionId, timeFromV, timeToV, searchArchV, focusSidV, editState])
   // 会话切换（窗口换会话）：活跃记忆页「智能体活跃」默认跟随当前窗口会话——
   // 重置手动选择的智能体并强制按新会话重查。放在上面的强制刷新 effect 之后声明，
   // 查询序号递增会覆盖旧会话的查询结果（避免 L1548 用旧 activeAgentV 抢答）
@@ -1741,7 +1708,7 @@ function MemoryView(props) {
     return out.length ? out : s
   }
   // 轮次页：倒序（最新在前）+ 直接显示轮次号 + 编辑
-  // 默认仅显示当前窗口会话（sessionId 由 slot 标准 props 注入）的轮次总结；可切换查看全部会话
+  // 只显示当前窗口会话（sessionId 由 slot 标准 props 注入）的轮次总结
   // 模型重新总结（方案B 同步直调）：提交 → 等 motionMemoryApi.turnRereview 返回 → 显示成功/失败
   function doResummarize(sid, tno, mode) {
     setBusy(true)
@@ -1785,12 +1752,9 @@ function MemoryView(props) {
           })
         })
       } }, '重试所有失败总结（' + failedList.length + '）') : null
-    var scopeLabel = scopeAllV
-      ? ('全部会话 · ' + (turnsPage.total || items.length) + ' 条' + (items.length < (turnsPage.total || items.length) ? '（已载 ' + items.length + '）' : '') + (focusSidV ? '（聚焦 ' + focusSidV.slice(0, 8) + '…）' : ''))
-      : ('当前会话：' + (sessionId || '（未注入）') + ' · ' + items.length + ' 条 · 间隔：' + intervalLabel)
+    var scopeLabel = '当前会话：' + (sessionId || '（未注入）') + ' · ' + items.length + ' 条 · 间隔：' + intervalLabel
     var scopeBar = React.createElement('div', { key: '__scope', style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderBottom: '1px dashed var(--dsw-alias-border-l1)', fontSize: 12 } },
       React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-all', flex: 1 } }, scopeLabel),
-      React.createElement('button', { style: mmBtn, title: scopeAllV ? '切回仅显示当前窗口会话的轮次总结' : '查看所有会话的轮次总结', onClick: function () { setScopeAll(!scopeAllV) } }, scopeAllV ? '仅当前会话' : '全部会话'),
       retryBtn,
     )
     // 缺失/未设置轮次：第一轮(1) 到当前轮(turnRange.max 或已有最大轮) 全覆盖，连续缺失合并为区间
@@ -1896,14 +1860,7 @@ function MemoryView(props) {
       if (d.kind === 'gap') rowEls.push(renderGapRow(d.g))
       else rowEls.push(renderTurnItem(d.it))
     }
-    // 底部加载提示（全部会话分页视图）：滚动触底自动加载更旧
-    var footerEls = []
-    if (scopeAllV && !focusSidV && turnsV && turnsV.length) {
-      footerEls.push(React.createElement('div', { key: '__turns_footer', style: Object.assign({}, mmEmpty, { textAlign: 'center', padding: '10px 12px' }) },
-        turnsPage.loading ? '加载更旧…' : (turnsPage.hasMore ? '↓ 继续滚动加载更旧' : '已到最旧'),
-      ))
-    }
-    return [scopeBar].concat(rowEls).concat(footerEls)
+    return [scopeBar].concat(rowEls)
   }
   // 单个已总结轮次条目渲染（renderTurns 内联拆分，供排序后渲染）
   // 唯一 key = it.ref（会话@轮次）：同一聚合文件的多个轮次条目 path 相同，
@@ -2441,7 +2398,7 @@ function MemoryView(props) {
   var body = tabV === 'turns' ? renderTurns() : tabV === 'sessions' ? renderSessions() : tabV === 'active' ? renderActive() : tabV === 'kws' ? renderKws() : renderPeriods()
   // 时间段搜索栏（会话记忆/周期总结页显示；轮次总结页固定当前会话不带时间）
   // 常规时间范围：从 ≤ 到；联动（从≤到、到≥从）；min=已知最旧、max=今天；时间变化自动刷新（无"搜索/清空"按钮）
-  // 会话记忆页：默认窗口 = 最近 72h（rangeInit 填充）；下限 = 全量 globalRange（不受窗口过滤，可查任意历史）
+  // 会话记忆页：默认不设时间窗（加载全部未归档）；下限 = 全量 globalRange（可查任意历史）
   var tbMin = ''
   if (tabV === 'sessions') {
     if (globalRangeV && globalRangeV.from) tbMin = String(new Date(globalRangeV.from).toISOString().slice(0, 10))
@@ -2492,10 +2449,6 @@ function MemoryView(props) {
         onScroll: function (e) {
           var st = e.target.scrollTop
           var m = Object.assign({}, scrollPosV); m[tabV] = st; setScrollPos(m)
-          // 轮次总结页：滚动触底加载更旧（移动端式无限滚动）
-          if (tabRef.current === 'turns' && e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 150) {
-            loadMoreTurns()
-          }
         },
       }, body),
       msgV ? React.createElement('div', { style: { padding: '4px 12px', fontSize: 11, color: 'var(--dsw-alias-label-secondary)', borderTop: '1px solid var(--dsw-alias-border-l1)' } }, msgV) : null,

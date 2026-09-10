@@ -102,21 +102,53 @@ export function scanZstdFrames(buffer) {
 }
 
 /**
+ * 在一个会话目录里挑"当前世代"的日志文件名。
+ *
+ * DSH 的会话日志有世代后缀（dsh-session-format/src/filename.ts:14）：
+ *   世代 0 → `session.jsonl.zstd`（沿用原名）；世代 N>0 → `session.vN.jsonl.zstd`。
+ * DSH 0.1.5 起新会话直接以 v3 落盘（只有 `session.v3.jsonl.zstd`，没有 v0 文件），
+ * 迁移旧会话则是 copy-on-write：v0 保留、新增 v3（此后新事件写进 v3）。
+ * 因此必须按世代号取最大者，不能硬编码 `session.jsonl.zstd`——否则升级后新建的会话
+ * 一律读不到日志（标题/归属/轮次范围/原文展开全部失效）。
+ * @returns 目录内世代最高的日志文件名，找不到返回 ''
+ */
+function pickSessionLogFile(dir) {
+  let best = ''
+  let bestGen = -1
+  try {
+    for (const name of readdirSync(dir)) {
+      let gen = -1
+      if (name === 'session.jsonl.zstd') gen = 0
+      else {
+        const m = /^session\.v(\d+)\.jsonl\.zstd$/.exec(name)
+        if (m) gen = Number(m[1])
+      }
+      if (gen >= 0 && gen > bestGen) { bestGen = gen; best = name }
+    }
+  } catch (e) { return '' }
+  return best
+}
+
+/**
  * 推导会话日志路径（可用 cwd 或 fallback 扫描 sessions 根目录找 <sid>）。
  * joinPath 由调用方注入（原闭包 p()，拼接路径并归一化反斜杠）。
  */
 export function sessionLogPathOf(sid, cwd, joinPath) {
   const root = sessionLogsRoot()
   if (!root || !sid) return ''
+  const pickIn = dir => {
+    const name = pickSessionLogFile(dir)
+    return name ? joinPath(dir, name) : ''
+  }
   if (cwd) {
-    const cand = joinPath(root, projectKeyOf(cwd), encodeSegment(sid), 'session.jsonl.zstd')
-    try { if (statSync(cand).isFile()) return cand } catch (e) {}
+    const hit = pickIn(joinPath(root, projectKeyOf(cwd), encodeSegment(sid)))
+    if (hit) return hit
   }
   // fallback：遍历 sessions 根目录下各项目目录找 sid（项目目录数量少）
   try {
     for (const proj of readdirSync(root)) {
-      const cand = joinPath(root, proj, encodeSegment(sid), 'session.jsonl.zstd')
-      try { if (statSync(cand).isFile()) return cand } catch (e) {}
+      const hit = pickIn(joinPath(root, proj, encodeSegment(sid)))
+      if (hit) return hit
     }
   } catch (e) {}
   return ''
@@ -285,7 +317,10 @@ export function createSessionLogReader(deps) {
       if (h && typeof h.cwd === 'string') cwd = h.cwd
     } catch (e) {}
     const slug = cwd ? projectKeyOf(cwd) : ''
-    const rel = slug ? 'sessions/' + slug + '/' + encodeSegment(sid) + '/session.jsonl.zstd' : ''
+    // 日志文件名按世代取（v0 无后缀，vN 带 .vN），不能硬编码
+    const abs = slug ? resolveLogPath(sid, cwd) : ''
+    const base = abs ? abs.split('/').pop() : ''
+    const rel = slug && base ? 'sessions/' + slug + '/' + encodeSegment(sid) + '/' + base : ''
     return {
       kind: 'session', sessionId: sid, turn,
       workspaceSlug: slug || null,

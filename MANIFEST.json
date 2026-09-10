@@ -1,17 +1,15 @@
 {
-    "version": "0.4.6",
+    "version": "0.4.7",
     "files": {
-        "cordis.patch.yml": "sha256:c370fc82f6b68ea9ff56f6130f223806df2d9bc9e75661a5c17abfbc0ea61276",
         "LICENSE": "sha256:d31b7024c5dd054a289d0a7d8bf7c2ae2d6374f38b1c656ace03f864766f9061",
-        "README.md": "sha256:b90818860459162332547ad87b8666733df73708485f9c44fe4dd3a3f2530e98",
-        "SETTINGS.md": "sha256:17384773f0d15ca4d987dc78f85f1085aca7020883036181240f81adb7975d14",
-        "package.json": "sha256:389d9b94a79dd81fa4a8ee8c1f7d335d8dcce9b5a4f8517f842cb9e386b9dec4",
-        "motion-memory.js": "sha256:7e2c6aef5c0f492211f551a090c79624d6d45d73bcee942f8041700d63ca8248",
-        "mm-profile/client.js": "sha256:89f82f7e0a9827a188941da0249da5ab8c287afcd18bd372ee5c9cfe6aa60307",
-        "mm-profile/index.js": "sha256:a263c6320e9da9a4e63c27e3754d3c1d4cf9b7c528e0f7711ae9e845175449f8",
+        "README.md": "sha256:c4b7334d85d06ac5f02d4090f7ec0412f0d1b02c45bdd15e211be0e799de484d",
+        "SETTINGS.md": "sha256:eedc066ae28d239c65a1a80a94f02c7841dec1f078f552d064a578f1defb575e",
+        "cordis.patch.yml": "sha256:c370fc82f6b68ea9ff56f6130f223806df2d9bc9e75661a5c17abfbc0ea61276",
+        "mm-profile/client.js": "sha256:1367764f89ef8e0314b986b283cbd5e7192de377cc6f8b8e4bdf7fc2dfbc3ad3",
+        "mm-profile/index.js": "sha256:993cbd2e0e1bc90a651b8536548718b1543a06423b38884112d2df26219d04e4",
         "mm-profile/package.json": "sha256:e13b17e24e072929ef523a5f96a65affb891f7a40dc04d861e096de2a837346d",
-        "mm-settings/client.js": "sha256:f76cf4a4feacc0f3924e1daa5394bc06279b4fda4be427628f0ab120486d7288",
-        "mm-settings/index.js": "sha256:42e123af5d5f8781a8e8ad1e6090f8a9ef773ef397538211ca0d3f336593fc80",
+        "mm-settings/client.js": "sha256:4e5b0b6be65ec94e6b38a25473f5cd1842ed19c9735ea60df698309641147fa3",
+        "mm-settings/index.js": "sha256:6df8d3e586d4415882af444336f1f1ad7ed002b1432bc868d744c2c97695c691",
         "mm-settings/package.json": "sha256:f11ce331c2e0614341abfe9efbd5ef1e2be53a945589cfe20f74ed663f908cbc",
         "motion-memory-modules/active.mjs": "sha256:789e8a4d65ce1798a10e009135ac3cfac27f286fe68b8bbad67ce59deff44bed",
         "motion-memory-modules/admin.mjs": "sha256:bc13efc0d5b65cef9a50083f335e76bee369b0529b0b770a979f7b8c6757eb68",
@@ -25,12 +23,14 @@
         "motion-memory-modules/period.mjs": "sha256:54085cbf7b53517bf564403317d969c8fe51c29dea05936fb155feceaea04920",
         "motion-memory-modules/profile.mjs": "sha256:b6d33f9840cf450e9b49043f80e2c8580f2e5e0ca8e926f5cb4ea96a06ff5711",
         "motion-memory-modules/query.mjs": "sha256:51bcdf6ed92fe65a116312dd8b96ae985daad38324c84212086c4305cc1795e3",
+        "motion-memory-modules/rpc-route.mjs": "sha256:3c288d2e2275ec7f8eaf29fbf6501147f8dc48de297e6023bd2a9bf4e5ae3e7b",
         "motion-memory-modules/semantic.mjs": "sha256:56085260c041bb418c7bcff3c677b25d9b525c247211e46565eef2879312e09f",
-        "motion-memory-modules/session-log.mjs": "sha256:1dd474817698a9fe778c6d7d6cb6f576d68eedc883e2fd7f5f9468378abc1952",
+        "motion-memory-modules/session-log.mjs": "sha256:923269c4f3ca36c7ccfb7008a9facd0d6d82d464a28cc7f674922fd859e494be",
         "motion-memory-modules/text-utils.mjs": "sha256:b79262d3723074edd0d06af4bb867dbda40bade155f4657e9ebca456f1536d45",
         "motion-memory-modules/time-utils.mjs": "sha256:90f459ed4b5bc87d6d81cf647e088212b00d743b984934ad4364a833f158f7cb",
         "motion-memory-modules/track.mjs": "sha256:d49181b9afb6b663396789674123b1e212b22ccbe09e1e120b41d92a6fbfe6f1",
         "motion-memory-modules/update.mjs": "sha256:ba3bfa364a9b45e886cbbe733d19bc178a0421e84f2d417910f11e9a68466b91",
-        "motion-memory-modules/write.mjs": "sha256:0eca587454a0eb4daf53089eb0e381d3495d4038884db42a74919e87198c5ae6"
+        "motion-memory-modules/write.mjs": "sha256:0eca587454a0eb4daf53089eb0e381d3495d4038884db42a74919e87198c5ae6",
+        "motion-memory.js": "sha256:4a87f69394381df63ad69ec77b2b0c117af29802b56676832ce1ff313dbc0c06"
     }
 }

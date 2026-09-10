@@ -1,8 +1,12 @@
-# 运动记忆（Motion Memory）v0.4.6
+# 运动记忆（Motion Memory）v0.4.7
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话中值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
-> ⚠️ **DSH 版本适配说明**：v0.4.6 适配 DSH **0.1.2-rc.1**（[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)，release commit `a66e470204`）。关键接口基准：① 会话消息读取 = `session.surface.nodes`（可见消息 seq）+ `session.eventAt(seq)` 索引（0.1.2 起**移除 `session.events` 全量数组**，live 会话事件读取经 `session.snapshotEvents()`）；② `agent/pre-step` payload `{ agent, messages, turn, step, signal }`，决策 `PreStepDecision { kind:'enter', messages }`；③ session 元数据经 `session.header`（cwd / parentSession / origin:'subagent' / agentPreset）。**DSH 目前仍处高强度破坏性迭代期，接口可能继续更换**：升级 DSH 前请先核对上述接口是否变化（或等本插件发布对应适配版本），勿用旧适配版强行运行；≤ v0.3.3 按旧 DSH 设计，在 0.1.2+ 下不保证正常运行。
+> ⚠️ **DSH 硬性版本配对**：**v0.4.7 只适配 DSH 0.1.5-rc.1**（[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)，tag `dsh-v0.1.5-rc.1`）。**其他版本的 DSH 一律不保证正常运行**——不是"少个功能"，而是可能整棵插件树挂载失败、或整份会话历史打不开（DSH 的失败方式是 fail-closed）。升级 DSH 前请先确认是否已有对应的适配版本，勿用旧适配版强行运行。
+>
+> ⚠️ **DSH 目前仍处于高频破坏性升级期**：0.1.2 → 0.1.5 之间，本插件被同一条链路连续干掉了 3 次（启动挂载失败 / 历史加载失败 / 界面全部失效）。每次升级 DSH 后，请按维护流程逐条复核，不要只看"DSH 能起来"。
+>
+> **v0.4.7 关键接口基准**：① 会话消息读取 = `session.surface.nodes`（可见消息 seq）+ `session.eventAt(seq)` 索引（0.1.2 起**移除 `session.events` 全量数组**，live 会话经 `session.snapshotEvents()`）；② 会话日志**文件名带世代后缀**（世代 0 = `session.jsonl.zstd`，世代 N = `session.vN.jsonl.zstd`，**0.1.5 起新会话直接写 v3**）；③ 会话格式 v0→v3 迁移对 message `source.kind` 有**白名单**且 fail-closed；④ 插件侧**不能**调用 `connection.rpc.handle()`（其内部 owner 过不了注入检查），必须自注册 webServer 路由并复用 `connection.requestRejection()`；⑤ `agent/pre-step` payload `{ agent, messages, turn, step, signal }`，决策 `PreStepDecision { kind:'enter', messages }`；⑥ 用户预置的 persona 配置键为 `prefix`/`suffix`（旧版是 `text`）。≤ v0.4.6 按旧 DSH 设计，在 0.1.5 下**无法运行**。
 
 ## 特性
 
@@ -46,12 +50,15 @@ git clone https://github.com/li3-feng2-jie2/dsh-motion-memory motion-memory-dist
       name: ./plugins/motion-memory-dist/motion-memory.js
     - id: mm-settings
       name: mm-settings
+    - id: mm-profile
+      name: mm-profile
 ```
 
-并把 `mm-settings` 挂到 profile 的 `node_modules/`（Windows 推荐用 junction）：
+并把 `mm-settings` / `mm-profile` 挂到 profile 的 `node_modules/`（Windows 推荐用 junction）：
 
 ```powershell
 mklink /J "<你的profile>\node_modules\mm-settings" "<你的profile>\plugins\motion-memory-dist\mm-settings"
+mklink /J "<你的profile>\node_modules\mm-profile"  "<你的profile>\plugins\motion-memory-dist\mm-profile"
 ```
 
 **重启 DSH** 后，设置页 →「运动记忆」→「版本与更新」可检查并一键更新（详见下文[版本与更新](#版本与更新)）。
@@ -59,10 +66,10 @@ mklink /J "<你的profile>\node_modules\mm-settings" "<你的profile>\plugins\mo
 ### 方式三：手动放置
 
 1. 下载本仓库源码：`https://github.com/li3-feng2-jie2/dsh-motion-memory`
-2. 把仓库根目录下的 `motion-memory.js`（记忆核心插件）、`mm-settings/`（设置界面插件：`index.js` + `client.js` + `package.json`）、`motion-memory-modules/`（纯函数模块）放到 DSH profile 的插件目录（如 `~/.dsh/profiles/<profile名>/plugins/`）
-3. 把 `mm-settings` 挂到 profile 的 `node_modules/`：
-   - 方式 A（Windows 推荐）：`mklink /J "你的profile\node_modules\mm-settings" "你的profile\plugins\mm-settings"`
-   - 方式 B：直接把 `mm-settings/` 目录复制到 `node_modules/mm-settings/`
+2. 把仓库根目录下的 `motion-memory.js`（记忆核心插件）、`mm-settings/`（设置界面插件：`index.js` + `client.js` + `package.json`）、`mm-profile/`（用户画像页插件：同上三件）、`motion-memory-modules/`（纯函数模块）放到 DSH profile 的插件目录（如 `~/.dsh/profiles/<profile名>/plugins/`）
+3. 把 `mm-settings` 与 `mm-profile` 挂到 profile 的 `node_modules/`：
+   - 方式 A（Windows 推荐）：`mklink /J "你的profile\node_modules\mm-settings" "你的profile\plugins\motion-memory-dist\mm-settings"`（`mm-profile` 同理）
+   - 方式 B：直接把 `mm-settings/`、`mm-profile/` 目录复制到 `node_modules/` 下
 4. 在 profile 的 `cordis.patch.yml` 里启用：
    ```yaml
    - insert:
@@ -70,12 +77,15 @@ mklink /J "<你的profile>\node_modules\mm-settings" "<你的profile>\plugins\mo
          name: ./plugins/motion-memory.js
        - id: mm-settings
          name: mm-settings
+       - id: mm-profile
+         name: mm-profile
    ```
 5. **重启 DSH**，记忆工具与设置界面随重启生效。
 
 ## 版本与更新
 
-- **当前版本**：v0.4.6（修复：新建会话智能体归属识别失效——DSH 0.1.2+ 移除 `session.events` 数组后 live 会话事件扫描落空，新建会话（GUI 先以默认 cordis 建档、随后 `agent-preset/selected` 写入真实预设）被误判为 cordis，首轮总览注入/记忆归属固定到错误智能体。修复：live 会话事件读取改经 `session.snapshotEvents()`（旧 `.events` 数组兜底），`agent-preset/selected` 选择事件优先于 header 创建初值）
+- **当前版本**：v0.4.7（**适配 DSH 0.1.5-rc.1**。① 启动修复：`connection.rpc.handle()` 在 0.1.5 下从插件侧必抛 `cannot get property "webServer" without inject`，导致 `mm-settings`/`mm-profile` 挂载失败、DSH 起不来——改为插件自注册 webServer 路由并复刻 RPC 协议（新增 `motion-memory-modules/rpc-route.mjs`），同时复用 `connection.requestRejection()` 保留信任栅栏；② 历史修复：注入消息的 `source.kind` 改为白名单形状 `{kind:'plugin',plugin:'motion-memory',form:'notice',summary:'overview p=… r=…'}`（旧形状读取仍兼容），避免旧日志被 v0→v3 迁移拒绝；③ 会话日志读取按**世代**取文件（`pickLog`：世代 0=`session.jsonl.zstd`、世代 N=`session.vN.jsonl.zstd`），修复 0.1.5 新建会话（只写 v3）读不到日志导致的"空轮次消失/会话记忆不显示/标题归属失效"；④ 界面：移除轮次总结页与其功能重叠的「全部会话」视图，会话记忆页默认不再限制 72 小时、直接加载全部未归档）
+- **历史版本**：v0.4.6（适配 DSH 0.1.2-rc.1）修复新建会话智能体归属识别失效——DSH 0.1.2+ 移除 `session.events` 数组后 live 会话事件扫描落空，新建会话被误判为 cordis；修复：live 会话事件读取改经 `session.snapshotEvents()`（旧 `.events` 数组兜底），`agent-preset/selected` 选择事件优先于 header 创建初值
 - **git 安装（推荐）**：插件启动后自动检查更新（启动 8 秒后一次 + 每 12 小时一次）。有新版时：
   - 设置页 →「运动记忆」→「版本与更新」→ 点「检查更新」查看，点「更新」拉取，**重启 DSH 生效**；
   - 或命令：`memory cmd=update`（检查） / `memory cmd=update action=apply`（更新）。

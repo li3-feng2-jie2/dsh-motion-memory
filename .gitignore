@@ -4,3 +4,5 @@ node_modules/
 Thumbs.db
 motion-memory.config.json
 .vs/
+# 本地维护手册：不提交、不随插件发布（见 MAINTENANCE.zh.md）
+MAINTENANCE*.md

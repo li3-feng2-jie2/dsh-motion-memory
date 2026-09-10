@@ -26,10 +26,10 @@ window.__ModuleLoader__.load({
     }
     var msgStyle = { padding: '6px 12px', fontSize: 12, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap', lineHeight: 1.6 }
 
-    // 信封与 mm-settings 一致：host connection.rpc.handle 收到 { type, method, payload } 后
-    // 返回 full.result.value = handle(endpoint, payload) 的结果
-    function callHost(endpoint, payload) {
-      return fetch('/mmprofile/' + endpoint, {
+    // 信封与 mm-settings 一致：host 侧 RPC channel 收 { type, method, payload }，
+    // 回 { type:'server-response', rpcId, result:{ ok, value } }。两个 channel 共用一份实现。
+    function callChannel(channel, endpoint, payload) {
+      return fetch(channel + '/' + endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -47,6 +47,7 @@ window.__ModuleLoader__.load({
         return full
       })
     }
+    function callHost(endpoint, payload) { return callChannel('/mmprofile', endpoint, payload) }
 
     function ProfilePage() {
       var profileS = React.useState(null)
@@ -72,12 +73,7 @@ window.__ModuleLoader__.load({
 
       // 配置读取（显示注入开关状态提示；motion-memory 配置固定位由 mm-settings host 提供）
       React.useEffect(function () {
-        fetch('/mmsettings/config', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ type: 'client-request', rpcId: 'mmp-cfg', method: 'config', payload: {} }),
-        }).then(function (r) { return r.json() }).then(function (full) {
-          var v = full && full.result && full.result.value
+        callChannel('/mmsettings', 'config', {}).then(function (v) {
           if (v && typeof v === 'object') setCfg(v)
         }).catch(function () {})
       }, [])

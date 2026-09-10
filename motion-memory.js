@@ -821,24 +821,22 @@ export function apply(ctx) {
     lines.push('</system-reminder>')
     return createUserMessage({
       content: [{ type: 'text', text: lines.join('\n') }],
-      source: {
-        kind: 'motion-memory-overview',
-        form: 'catalog',
-        entries: {
-          necessary: entries.necessary,
-          userProfile: entries.userProfile,
-          userReqs: entries.userReqs,
-          important: entries.important,
-          recent: [],
-          keywords: entries.keywords || [],
-          incidentId: entries.incident ? entries.incident.id : null,
-        },
-      },
+      source: overviewSource(entries),
     })
   }
 
+  // 读取注入消息的 source（两种形状都认）：
+  //   ① 新形状 kind='plugin' + plugin='motion-memory' + form='notice'，summary 里带 p/r 哈希
+  //      （2026-09 适配 DSH 0.1.5 的 source.kind 白名单；注入状态本身以 overviewInjected 标记为准）
+  //   ② 旧形状 kind='motion-memory-overview' + entries（v0.4.4 及更早写入的历史）
+  // 返回 { hashes:{p,r} }（新）或 { userProfile, userReqs, … }（旧）；无法识别返回 undefined。
   function readOverview(source) {
-    if (!source || source.kind !== 'motion-memory-overview') return undefined
+    if (!source) return undefined
+    if (source.kind === 'plugin' && source.plugin === 'motion-memory') {
+      const m = /p=([0-9a-f]{16})[\s,;]+r=([0-9a-f]{16})/.exec(String(source.summary || ''))
+      return m ? { hashes: { p: m[1], r: m[2] } } : undefined
+    }
+    if (source.kind !== 'motion-memory-overview') return undefined
     const e = source.entries
     if (!e || typeof e !== 'object') return undefined
     if (typeof e.necessary !== 'string' || !Array.isArray(e.important) || !Array.isArray(e.recent)) return undefined
@@ -869,6 +867,19 @@ export function apply(ctx) {
     return createHash('sha256').update(String(text || '')).digest('hex').slice(0, 16)
   }
 
+  // 注入消息的 source（唯一构造点，总览与变更提醒共用）：
+  // 必须落在 DSH 0.1.5 的 message source.kind 白名单内（会话格式 v0→v3 迁移 fail-closed）。
+  // 注入状态以记忆文件标记 overviewInjected 为准，这里只带两个内容哈希，
+  // 供"升级前存量会话"采纳时直接落标记（等价于原 entries.userProfile/userReqs 现算哈希）。
+  function overviewSource(entries) {
+    return {
+      kind: 'plugin',
+      plugin: 'motion-memory',
+      form: 'notice',
+      summary: 'overview p=' + sectionHash(entries.userProfile) + ' r=' + sectionHash(entries.userReqs),
+    }
+  }
+
   // DSH 0.1.2+ 会话事件访问适配：session.events 全量数组已移除
   // （27bf1039 "distinguish event seqs from log offsets" / 5660f44 "separate indexed
   // and snapshot log reads"），会话消息改经
@@ -895,8 +906,9 @@ export function apply(ctx) {
     } catch (e) {}
     return undefined
   }
-  // 迁移用证据查询：surface 上是否已有 motion-memory-overview 消息（升级前注入过）。
-  // 返回 { found:true, userProfile, userReqs } / { found:false } / { unknown:true }（无法判定）
+  // 迁移用证据查询：surface 上是否已有本插件注入的总览消息（升级前注入过）。
+  // 返回 { found:true, p, r }（新形状：直接给哈希）/ { found:true, userProfile, userReqs }（旧形状）
+  //      / { found:false } / { unknown:true }（无法判定）
   function overviewHistorySurface(agent) {
     try {
       const nodes = sessionSurfaceNodes(agent)
@@ -910,10 +922,9 @@ export function apply(ctx) {
         if (!ev) continue
         readAny = true
         if (ev.type !== 'user/message') continue
-        const src = ev.data && ev.data.source
-        if (!src || src.kind !== 'motion-memory-overview') continue
-        const snap = readOverview(src)
+        const snap = readOverview(ev.data && ev.data.source)
         if (!snap) continue
+        if (snap.hashes) return { found: true, p: snap.hashes.p, r: snap.hashes.r }
         return { found: true, userProfile: snap.userProfile, userReqs: snap.userReqs }
       }
       if (nodes.length && !readAny && !hasEventAt && !hasEvents) return { unknown: true }
@@ -980,19 +991,7 @@ export function apply(ctx) {
     lines.push('</system-reminder>')
     return createUserMessage({
       content: [{ type: 'text', text: lines.join('\n') }],
-      source: {
-        kind: 'motion-memory-overview',
-        form: 'catalog',
-        entries: {
-          necessary: entries.necessary,
-          userProfile: entries.userProfile,
-          userReqs: entries.userReqs,
-          important: entries.important,
-          recent: [],
-          keywords: entries.keywords || [],
-          incidentId: entries.incident ? entries.incident.id : null,
-        },
-      },
+      source: overviewSource(entries),
     })
   }
 
@@ -1040,13 +1039,13 @@ export function apply(ctx) {
       const evidence = overviewHistorySurface(agent)
       if (evidence.unknown) return decision       // 无法判定 → 静默
       if (evidence.found) {
-        const ok = await writeOverviewMark(ownerKey, sid, {
-          p: sectionHash(evidence.userProfile || ''),
-          r: sectionHash(evidence.userReqs || ''),
-        })
+        // 新形状已带哈希 → 直接落标记；旧形状（v0.4.4 及更早）→ 回退为"读文本现算哈希"
+        const ep = typeof evidence.p === 'string' ? evidence.p : sectionHash(evidence.userProfile || '')
+        const er = typeof evidence.r === 'string' ? evidence.r : sectionHash(evidence.userReqs || '')
+        const ok = await writeOverviewMark(ownerKey, sid, { p: ep, r: er })
         if (!ok) return decision
         // 与旧总览快照相比有画像/要求变化 → 补一次变更提醒
-        const note = renderOverviewDelta(entries, { p: sectionHash(evidence.userProfile || ''), r: sectionHash(evidence.userReqs || '') })
+        const note = renderOverviewDelta(entries, { p: ep, r: er })
         if (note) return { kind: 'enter', messages: [...decision.messages, note] }
         return decision
       }
@@ -1097,7 +1096,7 @@ export function apply(ctx) {
       state.diffQueue = []  // 一次性输出后清空
       const note = createUserMessage({
         content: [{ type: 'text', text: lines.join('\n') }],
-        source: { kind: 'motion-memory-diff', at: nowIso() },
+        source: { kind: 'plugin', plugin: 'motion-memory', form: 'notice', summary: 'active-diff ' + nowIso() },
       })
       return {
         kind: 'enter',
