@@ -766,13 +766,15 @@ export function apply(ctx) {
     // 不同智能体快速了解用户习惯/要求；内容变化才触发重注入（参与 digest）
     let userProfile = '', userReqs = ''
     try {
+      // 用户定调（2026-09-19）：用户画像/用户要求注入**不设长度上限**（原先各 slice(0,1000)），
+      // 精简由维护侧保证；此处只做内容读取，不再截断。
       if (cfg().injectUserProfile !== false) {
         const pr = await readUserProfile('profile')
-        if (pr && pr.exists) userProfile = String(pr.content || '').slice(0, 1000)
+        if (pr && pr.exists) userProfile = String(pr.content || '')
       }
       if (cfg().injectUserReqs !== false) {
         const rq = await readUserProfile('req')
-        if (rq && rq.exists) userReqs = String(rq.content || '').slice(0, 1000)
+        if (rq && rq.exists) userReqs = String(rq.content || '')
       }
     } catch (e) {}
     return {
@@ -1273,7 +1275,7 @@ export function apply(ctx) {
     const c = cfg()
     let changed = false
     const patch = (args && args.patch) || {}
-    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'summaryCharsK', 'autoUpdateCheck']
+    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'summaryCharsK', 'autoUpdateCheck', 'injectUserProfile', 'injectUserReqs']
     for (const k of keys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
     // indexScore（活跃索引 score 参数）子对象
     if (patch.indexScore && typeof patch.indexScore === 'object') {

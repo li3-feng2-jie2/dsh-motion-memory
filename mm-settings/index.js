@@ -503,6 +503,9 @@ export function apply(ctx) {
     return {
       config: {
         enabled: !!c.enabled, inject: !!c.inject, injectLimitBytes: c.injectLimitBytes || 4096, root: c.root || '',
+        // 2026-09-19 修复：此前 flatten 漏了这两个键，客户端 cfg.injectUserProfile 恒为 undefined，
+        // 而客户端用 `!== false` 判定 → 两个复选框永远显示打勾，与真实配置（可能为 false）脱节。
+        injectUserProfile: c.injectUserProfile !== false, injectUserReqs: c.injectUserReqs !== false,
         recentOverviewN: c.recentOverviewN || 3, archiveDays: c.archiveDays || 30,
         cascadeDepth: c.cascadeDepth === undefined ? 3 : c.cascadeDepth,
         queryHistoryN: c.queryHistoryN || 0, updateHistoryN: c.updateHistoryN || 0, historyPageSize: c.historyPageSize || 20, queryOtherAgents: !!c.queryOtherAgents,

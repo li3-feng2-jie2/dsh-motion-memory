@@ -1,12 +1,14 @@
-# 运动记忆（Motion Memory）v0.4.7
+# 运动记忆（Motion Memory）v0.4.8
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话中值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
-> ⚠️ **DSH 硬性版本配对**：**v0.4.7 只适配 DSH 0.1.5-rc.1**（[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)，tag `dsh-v0.1.5-rc.1`）。**其他版本的 DSH 一律不保证正常运行**——不是"少个功能"，而是可能整棵插件树挂载失败、或整份会话历史打不开（DSH 的失败方式是 fail-closed）。升级 DSH 前请先确认是否已有对应的适配版本，勿用旧适配版强行运行。
+> ⚠️ **DSH 硬性版本配对**：**v0.4.8 适配 DSH 0.1.5-rc.1 与 0.1.6-alpha.2**（tag `dsh-v0.1.5-rc.1` / `dsh-v0.1.6-alpha.2`；0.1.6 下已按下面的接口基准逐条复核，全部保持原形，仅增量新增）。**其他版本的 DSH 一律不保证正常运行**——不是"少个功能"，而是可能整棵插件树挂载失败、或整份会话历史打不开（DSH 的失败方式是 fail-closed）。升级 DSH 前请先确认是否已有对应的适配版本，勿用旧适配版强行运行。
 >
 > ⚠️ **DSH 目前仍处于高频破坏性升级期**：0.1.2 → 0.1.5 之间，本插件被同一条链路连续干掉了 3 次（启动挂载失败 / 历史加载失败 / 界面全部失效）。每次升级 DSH 后，请按维护流程逐条复核，不要只看"DSH 能起来"。
 >
-> **v0.4.7 关键接口基准**：① 会话消息读取 = `session.surface.nodes`（可见消息 seq）+ `session.eventAt(seq)` 索引（0.1.2 起**移除 `session.events` 全量数组**，live 会话经 `session.snapshotEvents()`）；② 会话日志**文件名带世代后缀**（世代 0 = `session.jsonl.zstd`，世代 N = `session.vN.jsonl.zstd`，**0.1.5 起新会话直接写 v3**）；③ 会话格式 v0→v3 迁移对 message `source.kind` 有**白名单**且 fail-closed；④ 插件侧**不能**调用 `connection.rpc.handle()`（其内部 owner 过不了注入检查），必须自注册 webServer 路由并复用 `connection.requestRejection()`；⑤ `agent/pre-step` payload `{ agent, messages, turn, step, signal }`，决策 `PreStepDecision { kind:'enter', messages }`；⑥ 用户预置的 persona 配置键为 `prefix`/`suffix`（旧版是 `text`）。≤ v0.4.6 按旧 DSH 设计，在 0.1.5 下**无法运行**。
+> **v0.4.7+ 关键接口基准**：① 会话消息读取 = `session.surface.nodes`（可见消息 seq）+ `session.eventAt(seq)` 索引（0.1.2 起**移除 `session.events` 全量数组**，live 会话经 `session.snapshotEvents()`）；② 会话日志**文件名带世代后缀**（世代 0 = `session.jsonl.zstd`，世代 N = `session.vN.jsonl.zstd`，**0.1.5 起新会话直接写 v3**）；③ 会话格式 v0→v3 迁移对 message `source.kind` 有**白名单**且 fail-closed；④ 插件侧**不能**调用 `connection.rpc.handle()`（其内部 owner 过不了注入检查），必须自注册 webServer 路由并复用 `connection.requestRejection()`；⑤ `agent/pre-step` payload `{ agent, messages, turn, step, signal }`，决策 `PreStepDecision { kind:'enter', messages }`；⑥ 用户预置的 persona 配置键为 `prefix`/`suffix`（旧版是 `text`）。≤ v0.4.6 按旧 DSH 设计，在 0.1.5 下**无法运行**。
+>
+> **0.1.6-alpha.2 复核结论（2026-09-19）**：以上 ①–⑥ 逐条核对**均未变**（`SESSION_FORMAT_VERSION` 仍为 3、source.kind 白名单仍 15 项且 `kind:'plugin'` 合法、`connection.requestRejection` 仍在、persona 与 client 半加载方式未动）；0.1.6 的新增全部是**增量**：`session.surface.contentGeneration`、`ToolExecutionInput.schema`、`PreToolDecision` 新增 `cancel`、`ToolErrorInfo.reason`；另 `ctx.codeRuntime` 已更名 `ctx.ptcRuntime`（本插件未使用，无影响）。工具注册面 `defineTool` / `ToolRuntime.register` / `output{schema,render}` **逐字节未变**。
 
 ## 特性
 
@@ -84,7 +86,8 @@ mklink /J "<你的profile>\node_modules\mm-profile"  "<你的profile>\plugins\mo
 
 ## 版本与更新
 
-- **当前版本**：v0.4.7（**适配 DSH 0.1.5-rc.1**。① 启动修复：`connection.rpc.handle()` 在 0.1.5 下从插件侧必抛 `cannot get property "webServer" without inject`，导致 `mm-settings`/`mm-profile` 挂载失败、DSH 起不来——改为插件自注册 webServer 路由并复刻 RPC 协议（新增 `motion-memory-modules/rpc-route.mjs`），同时复用 `connection.requestRejection()` 保留信任栅栏；② 历史修复：注入消息的 `source.kind` 改为白名单形状 `{kind:'plugin',plugin:'motion-memory',form:'notice',summary:'overview p=… r=…'}`（旧形状读取仍兼容），避免旧日志被 v0→v3 迁移拒绝；③ 会话日志读取按**世代**取文件（`pickLog`：世代 0=`session.jsonl.zstd`、世代 N=`session.vN.jsonl.zstd`），修复 0.1.5 新建会话（只写 v3）读不到日志导致的"空轮次消失/会话记忆不显示/标题归属失效"；④ 界面：移除轮次总结页与其功能重叠的「全部会话」视图，会话记忆页默认不再限制 72 小时、直接加载全部未归档）
+- **当前版本**：v0.4.8（**适配 DSH 0.1.5-rc.1 / 0.1.6-alpha.2**。① 修复设置页「注入用户画像 / 注入用户要求」两个复选框**恒显示打勾**：`mm-settings` 的 `flatten()` 返回体漏了这两个键，客户端拿到 `undefined` 而判定写成 `!== false`，于是界面与实际配置长期脱节（实际关着却显示开着，且点一下也会被刷新回勾）——现已补键，显示与运行配置一致；② 用户画像 / 用户要求在总览里**按全文注入**，去掉原先每块 `slice(0, 1000)` 的长度截断（精简由维护侧保证）；③ `memory cmd=config` 的键白名单补齐这两个键，读写口径一致；④ 文档同步：README 基准版本扩到 0.1.6-alpha.2 并附 8 条外部契约的复核结论）
+- **历史版本**：v0.4.7（**适配 DSH 0.1.5-rc.1**。① 启动修复：`connection.rpc.handle()` 在 0.1.5 下从插件侧必抛 `cannot get property "webServer" without inject`，导致 `mm-settings`/`mm-profile` 挂载失败、DSH 起不来——改为插件自注册 webServer 路由并复刻 RPC 协议（新增 `motion-memory-modules/rpc-route.mjs`），同时复用 `connection.requestRejection()` 保留信任栅栏；② 历史修复：注入消息的 `source.kind` 改为白名单形状 `{kind:'plugin',plugin:'motion-memory',form:'notice',summary:'overview p=… r=…'}`（旧形状读取仍兼容），避免旧日志被 v0→v3 迁移拒绝；③ 会话日志读取按**世代**取文件（`pickLog`：世代 0=`session.jsonl.zstd`、世代 N=`session.vN.jsonl.zstd`），修复 0.1.5 新建会话（只写 v3）读不到日志导致的"空轮次消失/会话记忆不显示/标题归属失效"；④ 界面：移除轮次总结页与其功能重叠的「全部会话」视图，会话记忆页默认不再限制 72 小时、直接加载全部未归档）
 - **历史版本**：v0.4.6（适配 DSH 0.1.2-rc.1）修复新建会话智能体归属识别失效——DSH 0.1.2+ 移除 `session.events` 数组后 live 会话事件扫描落空，新建会话被误判为 cordis；修复：live 会话事件读取改经 `session.snapshotEvents()`（旧 `.events` 数组兜底），`agent-preset/selected` 选择事件优先于 header 创建初值
 - **git 安装（推荐）**：插件启动后自动检查更新（启动 8 秒后一次 + 每 12 小时一次）。有新版时：
   - 设置页 →「运动记忆」→「版本与更新」→ 点「检查更新」查看，点「更新」拉取，**重启 DSH 生效**；

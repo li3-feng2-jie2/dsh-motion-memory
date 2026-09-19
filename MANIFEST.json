@@ -1,15 +1,15 @@
 {
-    "version": "0.4.7",
+    "version": "0.4.8",
     "files": {
         "LICENSE": "sha256:d31b7024c5dd054a289d0a7d8bf7c2ae2d6374f38b1c656ace03f864766f9061",
-        "README.md": "sha256:c4b7334d85d06ac5f02d4090f7ec0412f0d1b02c45bdd15e211be0e799de484d",
-        "SETTINGS.md": "sha256:eedc066ae28d239c65a1a80a94f02c7841dec1f078f552d064a578f1defb575e",
+        "README.md": "sha256:9bc11bb26a54f1025b62d13dcc6d46724febb35070a527d8d96fb16f2878251b",
+        "SETTINGS.md": "sha256:61903da1678160e7879652ba1006da726066bbccba68ec04a5f3491d017d050e",
         "cordis.patch.yml": "sha256:c370fc82f6b68ea9ff56f6130f223806df2d9bc9e75661a5c17abfbc0ea61276",
         "mm-profile/client.js": "sha256:1367764f89ef8e0314b986b283cbd5e7192de377cc6f8b8e4bdf7fc2dfbc3ad3",
         "mm-profile/index.js": "sha256:993cbd2e0e1bc90a651b8536548718b1543a06423b38884112d2df26219d04e4",
         "mm-profile/package.json": "sha256:e13b17e24e072929ef523a5f96a65affb891f7a40dc04d861e096de2a837346d",
         "mm-settings/client.js": "sha256:4e5b0b6be65ec94e6b38a25473f5cd1842ed19c9735ea60df698309641147fa3",
-        "mm-settings/index.js": "sha256:6df8d3e586d4415882af444336f1f1ad7ed002b1432bc868d744c2c97695c691",
+        "mm-settings/index.js": "sha256:82bf388044c4bd3ec7114c715349e24e34776c12cba8fc100bd7b319275feb80",
         "mm-settings/package.json": "sha256:f11ce331c2e0614341abfe9efbd5ef1e2be53a945589cfe20f74ed663f908cbc",
         "motion-memory-modules/active.mjs": "sha256:789e8a4d65ce1798a10e009135ac3cfac27f286fe68b8bbad67ce59deff44bed",
         "motion-memory-modules/admin.mjs": "sha256:bc13efc0d5b65cef9a50083f335e76bee369b0529b0b770a979f7b8c6757eb68",
@@ -31,6 +31,6 @@
         "motion-memory-modules/track.mjs": "sha256:d49181b9afb6b663396789674123b1e212b22ccbe09e1e120b41d92a6fbfe6f1",
         "motion-memory-modules/update.mjs": "sha256:ba3bfa364a9b45e886cbbe733d19bc178a0421e84f2d417910f11e9a68466b91",
         "motion-memory-modules/write.mjs": "sha256:0eca587454a0eb4daf53089eb0e381d3495d4038884db42a74919e87198c5ae6",
-        "motion-memory.js": "sha256:4a87f69394381df63ad69ec77b2b0c117af29802b56676832ce1ff313dbc0c06"
+        "motion-memory.js": "sha256:e681fd01e7cad7d6b93a9ca612181f5a270c547a507e25dfaa222b03e3474f48"
     }
 }
