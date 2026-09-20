@@ -511,6 +511,10 @@ export function apply(ctx) {
         queryHistoryN: c.queryHistoryN || 0, updateHistoryN: c.updateHistoryN || 0, historyPageSize: c.historyPageSize || 20, queryOtherAgents: !!c.queryOtherAgents,
         activeUsageScore: c.activeUsageScore || { enabled: false, score: 1, boost: 2 },
         decayDays: c.decayDays || 30, activeNotify: c.activeNotify !== false, readTrimChars: c.readTrimChars || 500,
+        // 2026-09-19 修复（同 flatten 漏键那一类）：autoUpdateCheck 此前既不在 flatten 也不在 config-set 的
+        // baseKeys 里 → 界面复选框恒显示打勾、且勾了也存不下去。新增 updatePolicy（更新范围）一并放行。
+        autoUpdateCheck: c.autoUpdateCheck !== false,
+        updatePolicy: (c.updatePolicy === 'exact' || c.updatePolicy === 'family') ? c.updatePolicy : 'epoch',
         recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
         admin: {
           enabled: !!adm.enabled,
@@ -678,7 +682,7 @@ export function apply(ctx) {
         state.modelsCache = null // 模型相关配置可能已变，失效 models 缓存
         const c = await readCfg()
         let changed = false
-        const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'decayDays', 'activeNotify', 'queryOtherAgents', 'readTrimChars', 'injectUserProfile', 'injectUserReqs']
+        const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'decayDays', 'activeNotify', 'queryOtherAgents', 'readTrimChars', 'injectUserProfile', 'injectUserReqs', 'autoUpdateCheck', 'updatePolicy']
         for (const k of baseKeys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
         if (patch.root !== undefined && patch.root !== c.root) { c.rootUserSet = true }
         if (patch.recordModel && typeof patch.recordModel === 'object') {

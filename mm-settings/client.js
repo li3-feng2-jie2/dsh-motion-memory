@@ -841,8 +841,21 @@ window.__ModuleLoader__.load({
         return out.length ? out : s
       }
       sections.push(Section('版本与更新',
-        CheckRow('自动检查更新', cfg.autoUpdateCheck !== false, function (e) { set('autoUpdateCheck', e.target.checked) }, '启动后 8 秒 + 每 12 小时自动检查一次新版本（git 安装 fetch 对比 / 手动安装版本号+清单对比）；仅检查不自动下载。关 = 只手动点"检查更新"'),
-        React.createElement('div', { style: msgStyle }, (updateInfo && updateInfo.text) ? withLinks(updateInfo.text) : ('当前版本：' + ((updateInfo && updateInfo.info && updateInfo.info.version) || '?') + (updateInfo && updateInfo.info && updateInfo.info.tag ? '（' + updateInfo.info.tag + '）' : '') + '\n点击"检查更新"查看是否有新版本')),
+              CheckRow('自动检查更新', cfg.autoUpdateCheck !== false, function (e) { set('autoUpdateCheck', e.target.checked) }, '启动后 8 秒 + 每 12 小时一次（只检查不下载）。关 = 只手动点"检查更新"。'),
+        React.createElement('div', { style: { marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 } },
+          React.createElement('span', {}, '更新范围'),
+          React.createElement('select', {
+            style: Object.assign({}, inputStyle, { width: 230 }),
+            value: (cfg.updatePolicy === 'exact' || cfg.updatePolicy === 'family') ? cfg.updatePolicy : 'epoch',
+            onChange: function (e) { set('updatePolicy', e.target.value) },
+          },
+            React.createElement('option', { value: 'exact' }, '只认精确配对'),
+            React.createElement('option', { value: 'epoch' }, '精确配对 + 同接口世代（默认）'),
+            React.createElement('option', { value: 'family' }, '再放宽到同子版本族'),
+          ),
+        ),
+              React.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '0 0 10px 0', lineHeight: 1.5 } }, '只把「适配本机 DSH」的版本当作可更新目标。放宽依据 compat.json 的 iface（接口世代）——登记了同世代才放行。'),
+              React.createElement('div', { style: msgStyle }, (updateInfo && updateInfo.text) ? withLinks(updateInfo.text) : '点击"检查更新"查看有无新版本'),
         React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' } },
           Button({ disabled: busy || updateBusy, onClick: function () {
             setBusy(true)
@@ -855,7 +868,7 @@ window.__ModuleLoader__.load({
             })
           } }, '更新'),
         ),
-        React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6, whiteSpace: 'pre-wrap' } }, '说明：git 安装（推荐）检查并拉取更新；手动安装按版本号 + MANIFEST 清单对比，增量下载校验后原子覆盖（备份保留最近一份，临时文件自动清理），重启 DSH 生效。'),
+              React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6, whiteSpace: 'pre-wrap' } }, '说明：更新只在本机 DSH 的配对范围内进行——最新版适配别的 DSH 时不提示升级。git 安装直接拉取，手动安装按 MANIFEST 增量覆盖，都需重启 DSH 生效。'),
       ))
 
       return React.createElement('div', { style: { maxWidth: 640 } },

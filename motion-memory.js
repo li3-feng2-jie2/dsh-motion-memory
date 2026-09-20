@@ -114,7 +114,7 @@ export function apply(ctx) {
   const {
     UPDATE_PROJECT_URL, execGit, pluginVersionInfo, compareVersions, checkUpdate,
     applyUpdate, downloadUpdateFromManifest, cleanupUpdateCache, rmSyncSafe, rmRecursiveSafe,
-    memCmdUpdate, autoUpdateCheck, startAutoUpdateCheck,
+    memCmdUpdate, autoUpdateCheck, startAutoUpdateCheck, localPairing,
   } = update
 
   // 活跃记忆域（C 档拆分）：readTurnUserText 为跨域依赖（adminCfg 已归 core），组装时传入
@@ -1253,6 +1253,11 @@ export function apply(ctx) {
     const c = cfg()
     const lines = ['【运动记忆配置】', '根目录：' + root() + '（配置固定 ' + configPath() + '）', '会话工作区：' + (state.sessionCwd || '（未捕获）') + (state.migrated ? '（已固定）' : '（初始化中）'), '智能体归属键：' + (meta.agent || '（无，回退会话隔离）') + ' · queryOtherAgents=' + !!cfg().queryOtherAgents, '事件计数：请求 ' + state.requestEvents + ' · 轮次结束 ' + state.turnEvents + (state.eventDelivered ? ' · session/event 已送达' : ' · session/event 未送达'), '总览注入：' + (c.inject ? '每会话仅一次' : '关闭（' + (c.injectLimitBytes || 4096) + ' 字节上限）'), '管理员模型：' + ((c.admin && c.admin.model && c.admin.model.provider) ? c.admin.model.provider + ' / ' + c.admin.model.model : '未配置（无模型降级）'), '归档天数：' + (c.archiveDays || 30), '最近总览 n：' + (c.recentOverviewN || 3), '关联记忆展开：' + (c.cascadeDepth === undefined ? 1 : c.cascadeDepth) + ' 层', '查询/增量历史条数：' + (c.queryHistoryN || 0) + '/' + (c.updateHistoryN || 0) + '（0=不附带）']
     const sOwner = scopeOwner(meta)
+    // 版本配对（插件版本 ↔ 本机 DSH 版本）：本地读取，不联网
+    try {
+      const lp = localPairing()
+      lines.push('【版本配对】' + lp.text)
+    } catch (e) {}
     const important = (await scanDir(importantDir(), false, sOwner)).length
     const archive = (await scanDir(archiveBaseDir(), true, sOwner)).length
     const events = (await listFiles(dailyBaseDir(), true)).filter(f => isEventRel(relOf(f.path))).length
@@ -1275,7 +1280,7 @@ export function apply(ctx) {
     const c = cfg()
     let changed = false
     const patch = (args && args.patch) || {}
-    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'summaryCharsK', 'autoUpdateCheck', 'injectUserProfile', 'injectUserReqs']
+    const keys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'cascadeDepth', 'archiveDays', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'decayDays', 'activeNotify', 'activeNoModelSummarize', 'summaryInjectChars', 'summaryCharsK', 'autoUpdateCheck', 'updatePolicy', 'injectUserProfile', 'injectUserReqs']
     for (const k of keys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
     // indexScore（活跃索引 score 参数）子对象
     if (patch.indexScore && typeof patch.indexScore === 'object') {
@@ -1395,6 +1400,7 @@ export function apply(ctx) {
           summaryInjectChars: c.summaryInjectChars || 300,
           summaryCharsK: (c.summaryCharsK === undefined || c.summaryCharsK === null) ? 2 : c.summaryCharsK,
           autoUpdateCheck: c.autoUpdateCheck !== false,
+          updatePolicy: (c.updatePolicy === 'exact' || c.updatePolicy === 'family') ? c.updatePolicy : 'epoch',
           recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
           admin: {
             enabled: !!adm.enabled,
@@ -1513,7 +1519,7 @@ export function apply(ctx) {
       const patch = (args && args.patch) || {}
       const c = cfg()
       let changed = false
-      const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'summaryCharsK', 'autoUpdateCheck']
+      const baseKeys = ['enabled', 'inject', 'injectLimitBytes', 'root', 'recentOverviewN', 'archiveDays', 'cascadeDepth', 'queryHistoryN', 'updateHistoryN', 'historyPageSize', 'queryOtherAgents', 'summaryCharsK', 'autoUpdateCheck', 'updatePolicy']
       for (const k of baseKeys) { if (patch[k] !== undefined && patch[k] !== c[k]) { c[k] = patch[k]; changed = true } }
       if (patch.recordModel && typeof patch.recordModel === 'object') {
         c.recordModel = c.recordModel || { provider: '', model: '' }
@@ -1605,6 +1611,7 @@ export function apply(ctx) {
           summaryInjectChars: c.summaryInjectChars || 300,
           summaryCharsK: (c.summaryCharsK === undefined || c.summaryCharsK === null) ? 2 : c.summaryCharsK,
           autoUpdateCheck: c.autoUpdateCheck !== false,
+          updatePolicy: (c.updatePolicy === 'exact' || c.updatePolicy === 'family') ? c.updatePolicy : 'epoch',
           recordModel: { provider: (c.recordModel && c.recordModel.provider) || '', model: (c.recordModel && c.recordModel.model) || '' },
           admin: {
             enabled: !!adm.enabled,
@@ -1917,7 +1924,9 @@ export function apply(ctx) {
           .catch(() => null)
           .finally(() => { state.updateCheckInflight = null })
       }
-      return { ok: true, checking: true, text: '正在检查更新…' }
+      // 检查期间先给本机版本配对（纯本地读取，不用等网络）：设置页立刻能看到"插件版本 ↔ DSH 版本"
+      const lp = localPairing()
+      return { ok: true, checking: true, pairing: lp, text: '正在检查更新…\n' + lp.text }
     },
     async updateApply() {
       await ready().catch(() => {})
