@@ -169,7 +169,7 @@ export function createUpdate(core, deps) {
             : newer
               ? ' · ' + (remoteTable ? notEligibleReason(remoteTable, remoteVer, lp.dshVersion) : '远端适配表取不到，按 fail-closed 不提示更新')
               : ' · 已是最新') +
-          '\n' + pairingLine(lp),
+          '\n' + pairingLine(lp) + pendingLine(),
       }
     }
     // 非 git 分支：版本号判断（手动复制安装）。远端版本 = GitHub raw 的 package.json version
@@ -234,7 +234,7 @@ export function createUpdate(core, deps) {
           : cmp > 0
             ? ' · ' + (remoteTable ? notEligibleReason(remoteTable, remoteVer, lp.dshVersion) : '远端适配表取不到，按 fail-closed 不提示更新')
             : ' · 已是最新') +
-        '\n' + pairingLine(lp),
+        '\n' + pairingLine(lp) + pendingLine(),
     }
   }
   // 执行更新前的最后一道门（更新范围）：界面按钮已被 hasUpdate 挡住，这里再挡一次，
@@ -256,7 +256,7 @@ export function createUpdate(core, deps) {
       remoteTable = await remoteCompatTable('')
     }
       if (!remoteVer) return { ok: false, updateBlocked: true, text: '更新已阻止：拿不到远端版本号' }
-      if (cmpVer(remoteVer, lp.plugin) <= 0) return { ok: true, noop: true, text: '已是最新（v' + lp.plugin + '）' }
+            if (cmpVer(remoteVer, lp.plugin) <= 0) return { ok: true, noop: true, pairing: lp, text: '已是最新（v' + lp.plugin + '）' }
       if (!remoteTable) return { ok: false, updateBlocked: true, text: '更新已阻止：拿不到远端适配表，按 fail-closed 不更新\n' + lp.text }
     const level = pairingLevel(remoteTable, remoteVer, lp.dshVersion, lp.policy)
     if (!level) {
@@ -269,28 +269,49 @@ export function createUpdate(core, deps) {
     }
     return { ok: true, remoteVersion: remoteVer, level, pairing: lp }
   }
-  // 执行更新（git 分支：pull --ff-only；非 git 分支：清单驱动增量下载覆盖）
+  // ── 两阶段更新（用户定调 2026-09-25）──────────────────────────────────────
+  // ① 下载：只把新版文件放进插件目录旁的暂存区（.motion-memory-pending/），
+  //    绝不改动正在运行的插件文件；② 激活：重启后插件启动自检发现完整暂存，
+  //    备份旧文件后原子替换；本次仍由旧代码运行（再重启一次加载新代码）。
+  // 包管理器安装（目录位于 node_modules 内）不支持就地激活：写它会污染 pnpm store，
+  // 应改用 DSH 插件页 / dsh plugin update。
+  function pendingRoot() { const b = pluginDir(); return b ? p(b, '.motion-memory-pending') : '' }
+  function pendingMetaPath() { const r = pendingRoot(); return r ? p(r, 'pending.json') : '' }
+  function readPending() {
+    try {
+      const m = readJsonFileNative(pendingMetaPath())
+      return (m && m.version && Array.isArray(m.files)) ? m : null
+    } catch (e) { return null }
+  }
+  function insideNodeModules(dir) { return /[\\/]node_modules[\\/]/i.test(String(dir || '')) }
+  function pendingLine() {
+    const m = readPending()
+    if (!m) return ''
+    return '\n已下载 v' + m.version + '（' + m.files.length + ' 个文件，下载于 ' + (m.at || '') + '）：重启 DSH 后由插件自检激活。'
+  }
+  // 执行更新 = 【只下载】：不改动正在运行的插件文件；替换发生在重启后的启动自检。
   async function applyUpdate() {
+    const existing = readPending()
+    if (existing) return { ok: true, downloaded: true, pending: existing.version, text: '已下载 v' + existing.version + '，请重启 DSH 后由插件自检激活。' }
     const gate = await updateEligibility()
-    if (gate && gate.noop) return { ok: true, text: gate.text, pairing: gate.pairing }
+          if (gate && gate.noop) return { ok: true, text: gate.text, pairing: gate.pairing || null }
     if (!gate || !gate.ok) return gate || { ok: false, text: '更新已阻止：更新范围检查失败' }
     const dir = pluginGitDir()
     if (dir) {
-      const pull = await execGit(['pull', '--ff-only'], { cwd: dir, timeout: 60000 })
-      if (!pull.ok) return { ok: false, text: '更新失败：' + pull.error + '（请先处理本地未提交改动）' }
-      const head = await execGit(['rev-parse', '--short', 'HEAD'], { cwd: dir })
-      return { ok: true, text: '已更新到 v' + gate.remoteVersion + '（提交 ' + (head.ok ? head.out : '?') + '），请重启 DSH 生效。\n' + pull.out, data: { head: head.ok ? head.out : '', version: gate.remoteVersion } }
+      const fet = await execGit(['fetch', 'origin'], { cwd: dir, timeout: 30000 })
+      if (!fet.ok) return { ok: false, text: '下载失败：' + fet.error + '（请确认 git 与网络可用）' }
+      const behind = await execGit(['rev-list', '--count', 'HEAD..@{u}'], { cwd: dir })
+      return { ok: true, downloaded: true, text: '已下载远端引用（落后 ' + (behind.ok ? behind.out : '?') + ' 个提交），未改动工作区文件。请重启 DSH，重启后自检执行 ff-only 合并激活。' }
     }
-    // 非 git：清单驱动增量下载覆盖（MANIFEST 对比 → 下载变化文件 → 校验 → 原子覆盖 → 备份/清理）
     return downloadUpdateFromManifest()
   }
-  // 清单驱动增量更新（非 git 手动安装）：从 GitHub raw 拉 MANIFEST.json（文件清单+哈希+版本），
-  // 对比本地只下载变化文件，临时目录校验后原子覆盖；备份保留最近一份，每次更新清理上上版本缓存。
+  // 清单驱动的下载（非 git 安装）：只把缺失/变化文件下载到暂存区并校验哈希，
+  // 写 pending.json 供重启后激活；不触碰当前插件文件。
   async function downloadUpdateFromManifest() {
     const base = pluginDir()
-    if (!base) return { ok: false, text: '无法定位插件目录，更新中止' }
+    if (!base) return { ok: false, text: '无法定位插件目录，下载中止' }
+    if (insideNodeModules(base)) return { ok: false, text: '当前插件由包管理器安装（目录在 node_modules 内），就地写会污染包缓存；请用 DSH 插件页 / dsh plugin 更新。' }
     try {
-      // ① 拉远端 MANIFEST
       const mf = await fetch('https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/MANIFEST.json', { signal: AbortSignal.timeout(20000) })
       if (!mf || !mf.ok) return { ok: false, text: '无法获取远端文件清单（MANIFEST.json），请检查网络' }
       const manifest = await parseRemoteJson(mf)
@@ -298,82 +319,98 @@ export function createUpdate(core, deps) {
       if (!remoteVer || !manifest.files || typeof manifest.files !== 'object') return { ok: false, text: '远端文件清单格式无效' }
       const localPkg = readJsonFileNative(p(base, 'package.json'))
       const localVer = (localPkg && localPkg.version) || '0.1.0'
-      if (compareVersions(remoteVer, localVer) <= 0) return { ok: true, text: '已是最新版本（v' + localVer + '），无需更新' }
-      // ② 对比本地：找出需要更新的文件（缺失 / 哈希不同）
-      const toUpdate = []
-      const localFiles = {}
-      const walkLocal = (dirAbs) => {
-        try {
-          const entries = readdirSync(dirAbs, { withFileTypes: true })
-          for (const en of entries) {
-            if (en.name === '.git') continue
-            const full = p(dirAbs, en.name)
-            if (en.isDirectory()) walkLocal(full)
-            else if (en.isFile()) localFiles[full] = true
-          }
-        } catch (e) {}
-      }
-      walkLocal(base)
+      if (compareVersions(remoteVer, localVer) <= 0) return { ok: true, text: '已是最新版本（v' + localVer + '），无需下载' }
+      const root = pendingRoot()
+      const filesDir = p(root, 'files')
+      rmSyncSafe(root)
+      mkdirSync(filesDir, { recursive: true })
+      const entries = []
       for (const rel of Object.keys(manifest.files)) {
-        const remoteHash = normHash(manifest.files[rel])
-        // 路径统一 / 分隔（p() 输出即 /；远端清单也是 /）
+        const expected = manifest.files[rel]
         const normRel = String(rel).replace(/\\/g, '/')
-        const normAbs = p(base, normRel)
-        const localBytes = existsSync(normAbs) ? readFileSync(normAbs) : null
-        if (!localBytes) { toUpdate.push({ rel, abs: normAbs }); continue }
-        if (!hashMatches(localBytes, remoteHash)) toUpdate.push({ rel, abs: normAbs })
-        delete localFiles[normAbs]
-      }
-      // 多余文件（远端清单没有的本地文件）：不删除，仅记录（避免误伤用户自加文件）
-      const extraFiles = Object.keys(localFiles)
-      if (!toUpdate.length) {
-        // 版本号比远端旧但文件哈希全一致（本地手动改过但内容等价）→ 更新 package.json 版本
-        const pkgAbs = p(base, 'package.json')
-        const pkg = readJsonFileNative(pkgAbs) || {}
-        pkg.version = remoteVer
-        nativeWriteAllowed(pkgAbs) && writeFileSync(pkgAbs, JSON.stringify(pkg, null, 1), 'utf8')
-        return { ok: true, text: '文件已是最新（版本号同步为 v' + remoteVer + '），请重启 DSH 生效' + (extraFiles.length ? '\n（忽略本地额外文件 ' + extraFiles.length + ' 个）' : '') }
-      }
-      // ③ 下载到临时目录 → 校验 → 原子覆盖
-      const tmpDir = p(base, '.motion-memory-tmp')
-      const bakDir = p(base, '.motion-memory-bak')
-      try { mkdirSync(tmpDir, { recursive: true }); rmSyncSafe(tmpDir) } catch (e) {}
-      mkdirSync(tmpDir, { recursive: true })
-      const downloaded = []
-      for (const f of toUpdate) {
-        const rawUrl = 'https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/' + f.rel.replace(/\\/g, '/')
+        const localAbs = p(base, normRel)
+        const localBytes = existsSync(localAbs) ? readFileSync(localAbs) : null
+        if (localBytes && hashMatches(localBytes, expected)) continue
+        const rawUrl = 'https://raw.githubusercontent.com/li3-feng2-jie2/dsh-motion-memory/main/' + normRel
         const resp = await fetch(rawUrl, { signal: AbortSignal.timeout(30000) })
-        if (!resp || !resp.ok) { cleanupUpdateCache(tmpDir); return { ok: false, text: '下载失败：' + f.rel + '（HTTP ' + (resp && resp.status) + '），已清理临时文件，未改动插件' } }
+        if (!resp || !resp.ok) { rmSyncSafe(root); return { ok: false, text: '下载失败：' + normRel + '（HTTP ' + (resp && resp.status) + '），已清理暂存，未改动插件' } }
         const buf = Buffer.from(await resp.arrayBuffer())
-        if (!hashMatches(buf, manifest.files[f.rel])) { cleanupUpdateCache(tmpDir); return { ok: false, text: '校验失败：' + f.rel + '（哈希不匹配），已清理临时文件，未改动插件' } }
-        const normRelT = String(f.rel).replace(/\\/g, '/')
-        const tmpAbs = p(tmpDir, normRelT)
-        mkdirSync(tmpAbs.slice(0, tmpAbs.lastIndexOf('/')), { recursive: true })
-        writeFileSync(tmpAbs, buf)
-        downloaded.push({ rel: f.rel, abs: f.abs, tmpAbs })
+        if (!hashMatches(buf, expected)) { rmSyncSafe(root); return { ok: false, text: '校验失败：' + normRel + '（哈希不匹配），已清理暂存，未改动插件' } }
+        const stagingAbs = p(filesDir, normRel)
+        mkdirSync(stagingAbs.slice(0, stagingAbs.lastIndexOf('/')), { recursive: true })
+        writeFileSync(stagingAbs, buf)
+        entries.push({ rel: normRel, hash: normHash(expected) })
       }
-      // ④ 备份旧文件（保留最近一份，清掉更早的）
-      try { mkdirSync(bakDir, { recursive: true }); rmSyncSafe(bakDir) } catch (e) {}
-      mkdirSync(bakDir, { recursive: true })
-      for (const f of downloaded) {
-        if (existsSync(f.abs)) {
-          const bakAbs = p(bakDir, String(f.rel).replace(/\\/g, '/'))
-          mkdirSync(bakAbs.slice(0, bakAbs.lastIndexOf('/')), { recursive: true })
-          writeFileSync(bakAbs, readFileSync(f.abs))
-        }
-      }
-      // ⑤ 原子覆盖（全部就绪后一次性替换）
-      for (const f of downloaded) {
-        mkdirSync(f.abs.slice(0, f.abs.lastIndexOf('/')), { recursive: true })
-        writeFileSync(f.abs, readFileSync(f.tmpAbs))
-      }
-      // ⑥ 清理：临时目录删除；备份只保留最近一份（本次已写入，删除后下次再建）
-      cleanupUpdateCache(tmpDir)
-      const extraNote = extraFiles.length ? '\n（忽略本地额外文件 ' + extraFiles.length + ' 个，未删除）' : ''
-      return { ok: true, text: '已更新到 v' + remoteVer + '（更新 ' + downloaded.length + ' 个文件），请重启 DSH 生效。\n备份保留在 .motion-memory-bak（最近一份）。' + extraNote, data: { version: remoteVer, updated: downloaded.length } }
+      writeFileSync(pendingMetaPath(), JSON.stringify({ version: remoteVer, from: localVer, at: nowIso(), files: entries }, null, 2) + '\n', 'utf8')
+      if (!entries.length) return { ok: true, downloaded: true, pending: remoteVer, text: '远端 v' + remoteVer + ' 的文件与本地一致（仅版本号差异），已记录；重启 DSH 后同步版本号。' }
+      return { ok: true, downloaded: true, pending: remoteVer, text: '已下载 v' + remoteVer + '（' + entries.length + ' 个文件）到暂存区，未改动当前插件。请重启 DSH，重启后由插件自检激活。' }
     } catch (e) {
-      return { ok: false, text: '更新失败：' + ((e && e.message) || e) + '（未改动插件文件）' }
+      return { ok: false, text: '下载失败：' + ((e && e.message) || e) + '（未改动插件）' }
     }
+  }
+  // 启动自检激活（重启后执行）：暂存完整 → 备份旧文件并原子替换；git 工作副本则 ff-only 合并。
+  async function activatePendingUpdate() {
+    const base = pluginDir()
+    if (!base) return { ok: false, skipped: true, text: '无法定位插件目录，跳过激活' }
+    const dir = pluginGitDir()
+    if (dir) {
+      try {
+        const fet = await execGit(['fetch', 'origin'], { cwd: dir, timeout: 30000 })
+        if (!fet.ok) return { ok: false, skipped: true, text: 'git 激活失败：' + fet.error }
+        const behind = await execGit(['rev-list', '--count', 'HEAD..@{u}'], { cwd: dir })
+        const n = behind.ok ? (Number(behind.out) || 0) : 0
+        if (!n) return { ok: false, skipped: true, text: 'git 工作副本已是最新，无需激活' }
+        const merge = await execGit(['merge', '--ff-only', '@{u}'], { cwd: dir, timeout: 60000 })
+        if (!merge.ok) return { ok: false, text: 'git 激活失败（ff-only 合并被拒）：' + merge.error }
+        const v = await remoteVersionOf(dir)
+        state.lastActivation = { version: v, at: nowIso(), files: n, mode: 'git' }
+        return { ok: true, version: v, files: n, text: '已激活 git 工作副本（合并 ' + n + ' 个提交）。本次仍由旧代码运行，请再重启一次 DSH 让它生效。' }
+      } catch (e) { return { ok: false, text: 'git 激活异常：' + ((e && e.message) || e) } }
+    }
+    const pending = readPending()
+    if (!pending) return { ok: false, skipped: true, text: '没有待激活的更新' }
+    if (insideNodeModules(base)) return { ok: false, text: '当前插件由包管理器安装（node_modules 内），不支持就地激活；请用 DSH 插件页 / dsh plugin 更新。' }
+    const root = pendingRoot()
+    const filesDir = p(root, 'files')
+    const files = Array.isArray(pending.files) ? pending.files : []
+    if (files.length) {
+      const missing = [], bad = []
+      for (const f of files) {
+        const rel = String((f && f.rel) || '').replace(/\\/g, '/')
+        const src = rel ? p(filesDir, rel) : ''
+        if (!src || !existsSync(src)) { missing.push(rel || '(空)'); continue }
+        if (!hashMatches(readFileSync(src), f.hash)) bad.push(rel)
+      }
+      if (missing.length || bad.length) return { ok: false, text: '待激活文件不完整（缺失 ' + missing.length + '、校验失败 ' + bad.length + '），暂存保留，下次重启重试。' }
+      const bak = p(base, '.motion-memory-bak')
+      try { mkdirSync(bak, { recursive: true }) } catch (e) {}
+      for (const f of files) {
+        const rel = String((f && f.rel) || '').replace(/\\/g, '/')
+        const abs = p(base, rel)
+        const src = p(filesDir, rel)
+        if (!nativeWriteAllowed(abs)) return { ok: false, text: '激活被拒绝：目标不在插件目录内（' + rel + '）' }
+        try {
+          if (existsSync(abs)) {
+            const bakAbs = p(bak, rel)
+            mkdirSync(bakAbs.slice(0, bakAbs.lastIndexOf('/')), { recursive: true })
+            writeFileSync(bakAbs, readFileSync(abs))
+          }
+          mkdirSync(abs.slice(0, abs.lastIndexOf('/')), { recursive: true })
+          writeFileSync(abs, readFileSync(src))
+        } catch (e) { return { ok: false, text: '激活失败于 ' + rel + '：' + ((e && e.message) || e) } }
+      }
+    }
+    try {
+      const pkgAbs = p(base, 'package.json')
+      const pkg = readJsonFileNative(pkgAbs)
+      if (pkg && pending.version && pkg.version !== pending.version && nativeWriteAllowed(pkgAbs)) {
+        pkg.version = pending.version
+        writeFileSync(pkgAbs, JSON.stringify(pkg, null, 2) + '\n', 'utf8')
+      }
+    } catch (e) {}
+    rmSyncSafe(root)
+    state.lastActivation = { version: pending.version, at: nowIso(), files: files.length }
+    return { ok: true, version: pending.version, files: files.length, text: '已激活 v' + pending.version + '（替换 ' + files.length + ' 个文件，旧文件备份在 .motion-memory-bak）。本次仍由旧代码运行，请再重启一次 DSH 让它生效。' }
   }
   // 更新缓存清理：删除临时目录内容；备份目录由下次更新重建（只留最近一份）
   function cleanupUpdateCache(tmpDir) {
@@ -392,10 +429,15 @@ export function createUpdate(core, deps) {
       try { rmdirSync(target) } catch (e) {}
     } else { try { unlinkSync(target) } catch (e) {} }
   }
-  // memory cmd=update（action=check 检查 / apply 更新）
+  // memory cmd=update（action=check 检查 / download|apply 下载到暂存 / activate 立即激活 / status 待激活状态）
   async function memCmdUpdate(args, meta) {
     const action = (args && args.action) || 'check'
-    if (action === 'apply') return applyUpdate()
+    if (action === 'activate') return activatePendingUpdate()
+    if (action === 'status') {
+      const m = readPending()
+      return { ok: true, pending: m ? m.version : '', text: m ? ('已下载 v' + m.version + '，重启 DSH 后由插件自检激活') : '没有待激活的更新' }
+    }
+    if (action === 'apply' || action === 'download') return applyUpdate()
     return checkUpdate()
   }
   // 自动更新检查：结果缓存到 state.lastUpdateCheck（设置页/命令可读，避免频繁 fetch）
@@ -430,5 +472,6 @@ export function createUpdate(core, deps) {
     UPDATE_PROJECT_URL, execGit, pluginVersionInfo, compareVersions, checkUpdate,
     applyUpdate, downloadUpdateFromManifest, cleanupUpdateCache, rmSyncSafe, rmRecursiveSafe,
     memCmdUpdate, autoUpdateCheck, startAutoUpdateCheck, localPairing, updateEligibility, hashMatches,
+    activatePendingUpdate, readPending, pendingRoot,
   }
 }

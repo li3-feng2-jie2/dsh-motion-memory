@@ -114,7 +114,7 @@ export function apply(ctx) {
   const {
     UPDATE_PROJECT_URL, execGit, pluginVersionInfo, compareVersions, checkUpdate,
     applyUpdate, downloadUpdateFromManifest, cleanupUpdateCache, rmSyncSafe, rmRecursiveSafe,
-    memCmdUpdate, autoUpdateCheck, startAutoUpdateCheck, localPairing,
+    memCmdUpdate, autoUpdateCheck, startAutoUpdateCheck, localPairing, activatePendingUpdate, readPending,
   } = update
 
   // 活跃记忆域（C 档拆分）：readTurnUserText 为跨域依赖（adminCfg 已归 core），组装时传入
@@ -600,7 +600,7 @@ export function apply(ctx) {
     if (!llm || !mc.provider || !mc.model) return null
     try {
       let text = ''
-      const messages = [{ id: 'mm-1', role: 'user', content: [{ type: 'text', text: promptText }], source: { kind: 'plugin', plugin: 'motion-memory' } }]
+      const messages = [{ id: 'mm-1', role: 'user', content: [{ type: 'text', text: promptText }], source: { kind: 'motion-memory', plugin: 'motion-memory' } }]
       const outCap = Math.max(256, Number(mc.outputTokens) || 1024)
       const streamOpts = { provider: mc.provider, model: mc.model, messages, maxTokens: outCap }
       if (mc.extraJson && typeof mc.extraJson === 'object') {
@@ -834,7 +834,7 @@ export function apply(ctx) {
   // 返回 { hashes:{p,r} }（新）或 { userProfile, userReqs, … }（旧）；无法识别返回 undefined。
   function readOverview(source) {
     if (!source) return undefined
-    if (source.kind === 'plugin' && source.plugin === 'motion-memory') {
+    if ((source.kind === 'motion-memory' || source.kind === 'plugin') && source.plugin === 'motion-memory') {
       const m = /p=([0-9a-f]{16})[\s,;]+r=([0-9a-f]{16})/.exec(String(source.summary || ''))
       return m ? { hashes: { p: m[1], r: m[2] } } : undefined
     }
@@ -874,8 +874,7 @@ export function apply(ctx) {
   // 注入状态以记忆文件标记 overviewInjected 为准，这里只带两个内容哈希，
   // 供"升级前存量会话"采纳时直接落标记（等价于原 entries.userProfile/userReqs 现算哈希）。
   function overviewSource(entries) {
-    return {
-      kind: 'plugin',
+    return {      kind: 'motion-memory',
       plugin: 'motion-memory',
       form: 'notice',
       summary: 'overview p=' + sectionHash(entries.userProfile) + ' r=' + sectionHash(entries.userReqs),
@@ -1098,7 +1097,7 @@ export function apply(ctx) {
       state.diffQueue = []  // 一次性输出后清空
       const note = createUserMessage({
         content: [{ type: 'text', text: lines.join('\n') }],
-        source: { kind: 'plugin', plugin: 'motion-memory', form: 'notice', summary: 'active-diff ' + nowIso() },
+        source: { kind: 'motion-memory', plugin: 'motion-memory', form: 'notice', summary: 'active-diff ' + nowIso() },
       })
       return {
         kind: 'enter',
@@ -2164,5 +2163,11 @@ export function apply(ctx) {
   // 启动后后台执行一次散事件文件合并（并入会话聚合文件；幂等，失败不阻塞）
   Promise.resolve().then(() => { ready().then(() => mergeScatteredTurnEvents()).catch(() => {}) })
   // 自动更新检查：启动后 8 秒检查一次，之后每 12 小时一次（结果缓存，失败静默）
+  // 启动自检：重启后若发现已下载的完整更新 → 就地激活（替换插件文件；包管理器安装会拒绝）；
+  // 本次仍由旧代码运行，激活完成后需再重启一次才加载新代码。
+  Promise.resolve().then(() => ready().then(() => activatePendingUpdate()).then((r) => {
+    if (r && r.ok) console.log('[motion-memory] ' + r.text)
+    else if (r && r.text && !r.skipped) console.log('[motion-memory] ' + r.text)
+  }).catch(() => {})).catch(() => {})
   startAutoUpdateCheck()
 }

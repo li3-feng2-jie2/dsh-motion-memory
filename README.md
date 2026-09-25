@@ -1,21 +1,37 @@
-# 运动记忆（Motion Memory）v0.4.9
+# 运动记忆（Motion Memory）v0.5.0
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话里值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
-## 版本配对（先看这一节）
+## 安装
 
-**插件与 DSH 是硬配对关系：只有下表"精确配对"栏里的组合被实际验证过。** 其他组合不是"少个功能"，而是可能整棵插件树挂载失败、或整份会话历史打不开——DSH 的失败方式是 fail-closed，所以版本号对不上就当作不配对。
+本仓库是标准 DSH **组合包（bundle）**：包内 `cordis.patch.yml` 声明三条插件行，安装器把包加进 profile 的 `dsh.profile.bundles` 后配置层自动生效 —— **不需要手工编辑 profile 的 `cordis.patch.yml`，也不需要手工建 `node_modules` 链接**。
 
-| 插件版本 | 精确配对（stable，已逐条复核） | 同族可能兼容（maybe，未验证） |
-|---|---|---|
-| **v0.4.9** / v0.4.8 | **DSH 0.1.6-alpha.2**、DSH 0.1.5-rc.1 | 其他 0.1.6-*、其他 0.1.5-* |
-| v0.4.7 | DSH 0.1.5-rc.1 | 其他 0.1.5-* |
-| v0.4.4 ~ v0.4.6 | DSH 0.1.2-rc.1 | 其他 0.1.2-* |
-| ≤ v0.3.3 | DSH 0.1.0 ~ 0.1.1 | —— |
+「添加插件」（插件页）或 `dsh plugin` 支持三种输入，本包都适用：
 
-- 同一份表的机器可读版本：仓库根目录 **`compat.json`**（`stable` / `maybe` 两档）。
-- **不用自己记**：插件会报本机配对情况——设置页 →「运动记忆」→「版本与更新」、命令 `memory cmd=status`（【版本配对】段）、`memory cmd=update`（检查更新时一并给出"新版本适配哪个 DSH 版本"）。
-- DSH 仍在高频破坏性升级期（0.1.2 → 0.1.6 之间，本插件被同一条链路干掉过 3 次），**升级 DSH 前先确认有没有对应的适配版本**。
+| 输入形式 | 命令示例 |
+|---|---|
+| **GitHub 仓库**（推荐） | `dsh plugin --profile <profile> add github:li3-feng2-jie2/dsh-motion-memory` |
+| **本地目录** | `dsh plugin --profile <profile> add "D:\path\to\dsh-motion-memory"`（绝对路径，适用于 clone 下来自行查看/改动） |
+| **包名（npm）** | `dsh plugin --profile <profile> add dsh-motion-memory` —— ⚠ **尚未发布到 npm，当前不可用**，等发布后再走这条 |
+
+安装后**重启 DSH**；升级用 `dsh plugin --profile <profile> update dsh-motion-memory`（或在插件页里操作）。装好后设置页会出现「运动记忆」「用户画像」，对话页出现「记忆」面板，模型侧出现 `memory` / `memory_query` / `memory_add` 三个工具。
+
+**安装排错两条**：
+
+1. 包必须声明 `dsh.bundle.patch` —— 否则安装器第一道门就按 `not-a-bundle` 拒绝（本包已声明）；
+2. DSH 0.1.7 起，插件行名必须是**包根裸包名**；包内子包要用**相对路径**（写成 `<包名>/<子路径>` 会让两个界面插件的浏览器半收不到，表现为"工具和注入都在、界面整片消失"）。本包已按此写法，改动前请先读 `cordis.patch.yml` 顶部注释。
+
+> **旧版安装方式（v0.4.9 及更早，已废弃）**：手工编辑 profile 的 `cordis.patch.yml` + 用 junction 把 `mm-settings` / `mm-profile` 挂进 `profile/node_modules`。那套方式在 DSH 0.1.7 下会让界面消失，且安装器无法管理；请改用上面的组合包安装。
+
+## 版本适配（重要）
+
+插件与 DSH 是**硬配对**关系：只有逐条复核过的组合才保证可用，其他组合可能整棵插件树挂载失败。
+
+**完整适配表已独立成文 → [COMPAT.md](COMPAT.md)**（机器可读版本是根目录 `compat.json`）。
+
+一句话：**本版 v0.5.0 的精确配对是 DSH 0.1.6-alpha.2 与 0.1.5-rc.1**；DSH 0.1.7 系列需要带 0.1.7 适配层的版本，本仓库发布面暂未包含，请不要直接安装到 0.1.7。
+
+插件会自己报配对情况：设置页 →「运动记忆」→「版本与更新」、`memory cmd=status`（【版本配对】段）、`memory cmd=update`。
 
 ## 特性
 
@@ -25,63 +41,19 @@
 - **关键词查重分流**：写入前自动查同名/近似标题，同一实体更新、不同实体消歧新建并关联
 - **引用转跳 + 只读保护**：正文链接点开即溯源；事件/周期默认只读，记忆污染可隔离回滚
 - **记忆面板增强**：关键词页按智能体筛选 + 归属标签；活跃页关键词独立词条维护、从关键词库挑选增加
-- **首轮总览注入**：重要记忆按分数排序、最近会话工作摘要、用户画像/用户要求全文、隔离通知并入必要记忆区
+- **首轮总览注入**：用户画像/用户要求全文、最近会话工作摘要、当前活跃关键词、隔离通知并入必要记忆区
+- **两阶段更新**：点「下载更新」只把新版文件放进暂存区，**不动正在运行的插件**；重启后自动激活
 - **无模型降级**：不配模型也能用（用户消息引用累积 + 周期转正）
 - 多智能体归属、自动归档、CAS 并发、失败续跑等工程细节齐全
 
-## 安装
-
-### 方式一：一行命令安装（推荐）
-
-本仓库是标准 DSH 组合包（bundle），用官方安装器装进 profile 即可，配置层自动生效：
-
-```bash
-dsh plugin --profile <你的profile名> add github:li3-feng2-jie2/dsh-motion-memory
-```
-
-**重启 DSH**，记忆工具与设置界面随重启生效。之后升级版本：`dsh plugin --profile <你的profile名> update dsh-motion-memory`。
-
-### 方式二：git clone 安装（推荐 · 支持一键更新）
-
-```bash
-cd <你的profile>/plugins
-git clone https://github.com/li3-feng2-jie2/dsh-motion-memory motion-memory-dist
-```
-
-在 profile 的 `cordis.patch.yml` 里启用：
-
-```yaml
-- insert:
-    - id: motion-memory
-      name: ./plugins/motion-memory-dist/motion-memory.js
-    - id: mm-settings
-      name: mm-settings
-    - id: mm-profile
-      name: mm-profile
-```
-
-把两个界面插件挂到 profile 的 `node_modules/`（Windows 推荐 junction）：
-
-```powershell
-mklink /J "<你的profile>\node_modules\mm-settings" "<你的profile>\plugins\motion-memory-dist\mm-settings"
-mklink /J "<你的profile>\node_modules\mm-profile"  "<你的profile>\plugins\motion-memory-dist\mm-profile"
-```
-
-**重启 DSH** 后，设置页 →「运动记忆」→「版本与更新」可检查并一键更新（见[版本与更新](#版本与更新)）。
-
-### 方式三：手动放置
-
-1. 下载源码：`https://github.com/li3-feng2-jie2/dsh-motion-memory`
-2. 把 `motion-memory.js`、`mm-settings/`、`mm-profile/`、`motion-memory-modules/`、`compat.json` 放到 profile 的插件目录（如 `~/.dsh/profiles/<profile名>/plugins/`）
-3. 把 `mm-settings`、`mm-profile` 挂到（或复制进）profile 的 `node_modules/`
-4. 在 `cordis.patch.yml` 里按方式二的三行启用，**重启 DSH**
-
 ## 版本与更新
 
-- **检查更新**：启动 8 秒后 + 每 12 小时一次（设置页可关）；手动入口是设置页「版本与更新」或 `memory cmd=update`（检查）/ `memory cmd=update action=apply`（更新）。只检查不下载。
-- **更新只在本机 DSH 的配对范围内进行**：远端"最新版"若不是给本机这个 DSH 版本用的，就**不提示升级**（更新会把人拖到不配对的版本，DSH 是 fail-closed）；执行更新也被同一道门挡住。检查结果一行给全：`插件版本 ↔ DSH 版本 · 配对状态 · 可更新至 vX / 已是最新`。
-- **更新范围**（设置页可调，配置项 `updatePolicy`）：`exact` 只认精确配对 / `epoch`（默认）精确配对 + 同接口世代 / `family` 再放宽到同子版本族。放宽依据在 `compat.json` 的 `iface`（接口世代）——接口没大变动时把子版本族登记进去（如 `"0.1.6": "dsh3"`），**不用改代码**。
-- **执行更新**：git 安装 `git pull --ff-only`；手动安装按 `MANIFEST.json` 清单增量覆盖（逐个校验 sha256）。都需**重启 DSH** 生效；离线只影响提示，不影响使用。
+- **检查**：启动 8 秒后 + 每 12 小时一次（设置页可关）；手动入口：设置页「版本与更新」或 `memory cmd=update`（只读，不改任何文件）。
+- **下载**：按钮「下载更新」或 `memory cmd=update action=download` —— 按远端 `MANIFEST.json` 把缺失/变化的文件下载到插件目录的暂存区 `.motion-memory-pending/`，逐个校验 sha256，**不触碰当前插件文件**；git 工作副本形态只执行 `git fetch`（不动工作区）。
+- **激活**：重启 DSH 后插件启动自检发现完整暂存 → 备份旧文件到 `.motion-memory-bak/` → 原子替换 → 同步版本号。**本次仍由旧代码运行**，控制台会提示"请再重启一次加载新代码"。
+- 命令入口：`action=check`（默认）· `download`（下载）· `activate`（立即激活）· `status`（待激活状态）。
+- **更新范围门**（配置项 `updatePolicy`：`exact` / `epoch`（默认）/ `family`）：只把"适配本机 DSH"的远端版本当更新目标，放宽依据是 `compat.json` 的 `iface`——最新版适配别的 DSH 时不提示升级。
+- **由包管理器安装**（用「添加插件」装进 `node_modules`）的插件**不支持就地激活**：写它会污染 pnpm store。那类安装请用 DSH 插件页 / `dsh plugin update` 升级；插件会直接拒绝并提示。
 
 ## 快速上手（3 步）
 
@@ -106,6 +78,7 @@ mklink /J "<你的profile>\node_modules\mm-profile"  "<你的profile>\plugins\mo
 ## 文档与工具
 
 - **设置与使用说明**（全部配置项、各功能工作原理、引用格式）→ [SETTINGS.md](SETTINGS.md)
+- **版本适配表**（哪些 DSH 版本能用、`compat.json` 字段、更新范围策略）→ [COMPAT.md](COMPAT.md)
 
 | 工具 | 用途 |
 |---|---|

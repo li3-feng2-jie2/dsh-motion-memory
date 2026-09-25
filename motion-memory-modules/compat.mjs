@@ -221,37 +221,58 @@ export function detectDshVersion(opts) {
   if (env) return { version: env, path: '', source: 'env DSH_VERSION' }
   const home = String(o.home || process.env.DSH_HOME || '').replace(/\\/g, '/').replace(/\/+$/, '')
   const profile = String(o.profile || process.env.DSH_PROFILE || 'web')
-  const starts = []
-  if (o.pluginDir) starts.push(o.pluginDir)
-  if (o.cwd) starts.push(o.cwd)
+  // 候选可信度重排（2026-09-25）：本机同时存在旧树 profiles/node_modules（0.1.6-alpha.2）
+  // 与正在运行的源码树（D:\dsh\deepseek-harness-dsh-v0.1.7-rc.2）。旧逻辑先问 home 候选，
+  // 一命中旧树就把本机版本认成 0.1.6；而源码树根的包名是 @deepseek-ai/dsh-root，
+  // 旧逻辑只认 @deepseek-ai/dsh —— 两条合起来让探测永远落到旧树上。
+  // 现在：运行时线索（插件目录 / cwd / argv[1] / --import 加载器路径）优先上溯，home 仅兜底。
+  const runtimeStarts = []
+  const pushStart = (s) => {
+    const v = String(s || '').replace(/\\/g, '/').replace(/\/+$/, '')
+    if (v) runtimeStarts.push(v)
+  }
+  pushStart(o.pluginDir)
+  pushStart(o.cwd)
   const argv1 = (typeof process !== 'undefined' && process.argv && process.argv[1]) ? String(process.argv[1]).replace(/\\/g, '/') : ''
-  if (argv1) {
-    const idx = argv1.lastIndexOf('/')
-    if (idx > 0) starts.push(argv1.slice(0, idx))
-  }
-  const cands = []
-  if (home) {
-    cands.push([home + '/profiles/' + profile + '/node_modules/@deepseek-ai/dsh/package.json', 'profile node_modules'])
-    cands.push([home + '/profiles/node_modules/@deepseek-ai/dsh/package.json', 'profiles node_modules'])
-  }
-  for (const s of starts) {
-    for (const d of parentDirs(s)) {
-      cands.push([d + '/node_modules/@deepseek-ai/dsh/package.json', 'node_modules @ ' + d])
+  if (argv1) pushStart(argv1.slice(0, Math.max(0, argv1.lastIndexOf('/'))))
+  const execArgv = (typeof process !== 'undefined' && Array.isArray(process.execArgv)) ? process.execArgv : []
+  for (const a of execArgv) {
+    const m = /^file:\/\/\/(.+)$/.exec(String(a))
+    if (m) {
+      const f = m[1].replace(/\\/g, '/')
+      pushStart(f.slice(0, Math.max(0, f.lastIndexOf('/'))))
     }
   }
-  // 源码树兜底：仓库根 package.json（name 必须是 @deepseek-ai/dsh，避免误认插件自己的包）
-  for (const s of starts) {
-    for (const d of parentDirs(s)) cands.push([d + '/package.json', 'source tree ' + d])
-  }
   const seen = {}
-  for (const pair of cands) {
-    const file = pair[0], source = pair[1]
-    if (!file || seen[file]) continue
+  const accept = (file, source, allowSourceRoot) => {
+    if (!file || seen[file]) return null
     seen[file] = 1
     const o2 = readJsonIfExists(file)
-    if (!o2 || !o2.version) continue
-    if (String(o2.name || '') !== '@deepseek-ai/dsh') continue
+    if (!o2 || !o2.version) return null
+    const name = String(o2.name || '')
+    const ok = allowSourceRoot ? (name === '@deepseek-ai/dsh' || name === '@deepseek-ai/dsh-root') : (name === '@deepseek-ai/dsh')
+    if (!ok) return null
     return { version: normVer(o2.version), path: file, source }
+  }
+  // ① 运行时线索：先找上溯路上的 node_modules/@deepseek-ai/dsh，再找源码树根 package.json
+  for (const s of runtimeStarts) {
+    for (const d of parentDirs(s)) {
+      const hit = accept(d + '/node_modules/@deepseek-ai/dsh/package.json', 'node_modules @ ' + d, false)
+      if (hit) return hit
+    }
+  }
+  for (const s of runtimeStarts) {
+    for (const d of parentDirs(s)) {
+      const hit = accept(d + '/package.json', 'source tree ' + d, true)
+      if (hit) return hit
+    }
+  }
+  // ② home 兜底（旧安装形态：profile 级优先于 profiles 级）
+  if (home) {
+    const p1 = accept(home + '/profiles/' + profile + '/node_modules/@deepseek-ai/dsh/package.json', 'profile node_modules', false)
+    if (p1) return p1
+    const p2 = accept(home + '/profiles/node_modules/@deepseek-ai/dsh/package.json', 'profiles node_modules', false)
+    if (p2) return p2
   }
   return { version: '', path: '', source: '' }
 }

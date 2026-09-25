@@ -1,12 +1,21 @@
 # dsh-motion-memory 配置层（bundle patch）
-# 作为组合包安装时，插件行按包名引用：
+# 安装后由这三行挂载插件（「添加插件」/ dsh plugin / pnpm 都会读到本文件）：
 #   - motion-memory: 记忆核心 host 插件（包 main -> motion-memory.js）
-#   - mm-settings:   设置界面插件（包内子包 mm-settings/，含 host index.js 与 client client.js）
-#   - mm-profile:    用户画像独立页面插件（批次 B：全局用户画像/要求可视化编辑，包内子包 mm-profile/）
+#   - mm-settings / mm-profile: 包内子包（各含 host index.js 与 client client.js）
+#
+# ⚠ 行名规则（DSH 0.1.7 实测，写错会让界面整片消失）：
+#   主行必须是【包根裸包名】（dsh-motion-memory）—— 显示元数据与包解析都只认它；
+#   两个子行必须用【相对路径】，不能写 <包名>/<子路径>：
+#   DSH 收集浏览器半时用 exactPackageSpecifier() 取包根名，含 "/" 的子路径直接返回
+#   undefined → 该行不生成 client 行（client.js 进不了 __DSH_BOOT__）→ 设置页「运动记忆」、
+#   记忆面板、「用户画像」页签整片消失；而 host 半照常挂载，所以现象是
+#   「工具和开头注入都在、界面没了」。
+#   相对路径会被锚定到本文件所在目录，再由 nearestPackage() 向上找到各自的
+#   package.json（dsh.client.platform=web + exports["./client"]），界面因此正常。
 - insert:
     - id: motion-memory
       name: dsh-motion-memory
     - id: mm-settings
-      name: dsh-motion-memory/mm-settings
+      name: ./mm-settings/index.js
     - id: mm-profile
-      name: dsh-motion-memory/mm-profile
+      name: ./mm-profile/index.js

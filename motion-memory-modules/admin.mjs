@@ -363,7 +363,8 @@ export function createAdmin(core, deps) {
             '- 有记忆要写 → 输出 {"tool":"memory_add","args":{"title":"...","content":"...","reason":"..."}} 或 {"tool":"memory_event_add","args":{...}}\n' +
             '只输出这个 JSON 工具调用对象，不要任何其他文字。'
         }
-        const messages = [{ id: 'mm-admin-' + uid(), role: 'user', content: [{ type: 'text', text: finalPrompt }], source: { kind: 'plugin', plugin: 'motion-memory' } }]
+        // DSH 0.1.7（会话格式 v4）禁用 source.kind='plugin'，必须用产生者自己的 kind。
+        const messages = [{ id: 'mm-admin-' + uid(), role: 'user', content: [{ type: 'text', text: finalPrompt }], source: { kind: 'motion-memory', plugin: 'motion-memory' } }]
         let text = ''
         // 批4：extraJson 合并进模型调用参数（temperature/top_p 等自定义配置）
         const streamOpts = { provider: opts.provider, model: opts.model, messages, maxTokens: outCap }

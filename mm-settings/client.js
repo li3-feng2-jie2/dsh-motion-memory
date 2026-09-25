@@ -862,13 +862,13 @@ window.__ModuleLoader__.load({
             callHost('mm-update-check', { force: true }).then(function (r) { setUpdateInfo(r || { text: '（无返回）' }) }).catch(function (e) { setUpdateInfo({ text: '检查失败：' + String((e && e.message) || e) }) }).finally(function () { setBusy(false) })
           } }, '检查更新'),
           Button({ disabled: busy || updateBusy || !(updateInfo && updateInfo.hasUpdate), onClick: function () {
-            askConfirm('确认更新插件到最新版本？更新后需重启 DSH 生效。', function () {
+                  askConfirm('确认下载更新？只把新版文件放进暂存区，不改动当前运行的插件；重启 DSH 后由插件自检激活。', function () {
               setUpdateBusy(true)
               callHost('mm-update', {}).then(function (r) { setUpdateInfo(r || { text: '（无返回）' }) }).catch(function (e) { setUpdateInfo({ text: '更新失败：' + String((e && e.message) || e) }) }).finally(function () { setUpdateBusy(false) })
             })
-          } }, '更新'),
+                } }, '下载更新'),
         ),
-              React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6, whiteSpace: 'pre-wrap' } }, '说明：更新只在本机 DSH 的配对范围内进行——最新版适配别的 DSH 时不提示升级。git 安装直接拉取，手动安装按 MANIFEST 增量覆盖，都需重启 DSH 生效。'),
+                    React.createElement('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6, whiteSpace: 'pre-wrap' } }, '说明：更新分两步——①「下载更新」只把新版文件下载到插件目录的暂存区（.motion-memory-pending），不动正在运行的版本；② 重启 DSH 后插件启动自检激活（旧文件备份在 .motion-memory-bak），再重启一次加载新代码。只在本机 DSH 的配对范围内下载；插件由包管理器安装（位于 node_modules 内）时不支持就地激活，请用 DSH 插件页更新。'),
       ))
 
       return React.createElement('div', { style: { maxWidth: 640 } },
