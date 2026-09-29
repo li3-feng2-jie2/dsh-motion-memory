@@ -10,14 +10,73 @@ export function splitParagraphs(text) {
   return String(text || '').split(/\r?\n/).map(s => s.trim()).filter(s => s !== '')
 }
 
-/** 按中文/英文句读切句子 */
+/** 中文/英文硬句末：这些标点在任何位置都断句 */
+const HARD_END = /[。！？!?；;]/
+/** 词字符：'.' 两侧都是词字符 → 该点号在词内部，不断句 */
+const WORD_CHAR = /[A-Za-z0-9_]/
+/** 句末标点后可吸附的收尾符号（右引号/右括号）：与本句同属一句 */
+const TRAILING = /[”"’'）」』】〉》\)\]]/
+/** 常见拉丁缩写：其后的点号不算句末 */
+const ABBR = /(?:^|[^A-Za-z])(?:e\.g|i\.e|etc|vs|resp|approx|cf|al|mr|mrs|ms|dr|prof|st|no|fig)\.$/i
+
+/**
+ * '.' 是否算句末。
+ * 以下「词内点号 / 标记点号」一律不算句末，否则会被误切成两句：
+ * - 数值小数与版本号：1.2、v0.5.0、192.168.1.1
+ * - 文件名与路径：text-utils.mjs、docs/a.md、compat.json
+ * - 拉丁缩写：e.g.、i.e.、etc.、Mr.
+ * - 列表序号：1. 、2. （序号后的点号不是句末）
+ */
+function isDotBoundary(s, i) {
+  const prev = s[i - 1]
+  const next = s[i + 1]
+  if (next === undefined) return true     // 行末点号＝句末
+  if (prev === undefined) return false    // 行首点号不断句
+  if (WORD_CHAR.test(prev) && WORD_CHAR.test(next)) return false
+  if (ABBR.test(s.slice(0, i + 1))) return false
+  if (isEnumMarker(s, i)) return false
+  return true
+}
+
+/** 列表序号标记（"1. "）：点号前是行首/空白/句末标点，点号后紧跟空白 */
+function isEnumMarker(s, i) {
+  const before = s.slice(0, i)
+  const m = before.match(/(\d+)$/)
+  if (!m) return false
+  const head = before.slice(0, before.length - m[1].length)
+  const atHead = head === '' || /[\s。！？!?；;]$/.test(head)
+  return atHead && /\s/.test(s[i + 1] || '')
+}
+
+/** 收集 [from,to] 切片（去空白后非空才收） */
+function pushSlice(out, s, from, to) {
+  const t = s.slice(from, to + 1).trim()
+  if (t) out.push(t)
+}
+
+/**
+ * 按中文/英文句读切句子。
+ * - 句末标点连同其后连续的同类标点、收尾引号括号一起归前一句（"？！"、"。。。"不产生空句，“好！”不断开）；
+ * - '.' 经 isDotBoundary 判定：数值/版本号/文件名/路径/缩写/列表序号的点号不切。
+ */
 export function splitSentences(para) {
   const s = String(para || '').trim()
   if (!s) return []
   const out = []
-  const re = /[^。！？!?；;.]+[。！？!?；;.]*/gu
-  let m
-  while ((m = re.exec(s)) !== null) { const t = m[0].trim(); if (t) out.push(t) }
+  let start = 0
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    const isDot = ch === '.'
+    if (!isDot && !HARD_END.test(ch)) continue
+    if (isDot && !isDotBoundary(s, i)) continue
+    let j = i
+    while (isDot ? s[j + 1] === '.' : (j + 1 < s.length && HARD_END.test(s[j + 1]))) j++
+    while (j + 1 < s.length && TRAILING.test(s[j + 1])) j++
+    pushSlice(out, s, start, j)
+    start = j + 1
+    i = j
+  }
+  pushSlice(out, s, start, s.length - 1)
   if (!out.length) out.push(s)
   return out
 }
@@ -95,13 +154,13 @@ export function deltaOverlap(a, b) {
 /** 截断（加省略号） */
 export function trunc(s, n) { const t = String(s == null ? '' : s); return t.length > n ? t.slice(0, n) + '…' : t }
 
-/** delta 摘要文本 */
+/** delta 摘要文本：只列变化前后文本，不带「第n段 / 共n句 / 第n句」编号 */
 export function deltaSummary(delta) {
   if (!delta || !delta.length) return '（无文本变化）'
   const lines = []
   for (const pc of delta) {
     for (const c of (pc.changes || [])) {
-      lines.push('第' + (pc.paragraph + 1) + '段，共' + pc.sentenceCount + '句；第' + (c.index + 1) + '句：' + (c.from === null ? '（无）' : trunc(c.from, 40)) + ' → ' + (c.to === null ? '（无）' : trunc(c.to, 40)))
+      lines.push('- ' + (c.from === null ? '（无）' : trunc(c.from, 40)) + ' → ' + (c.to === null ? '（无）' : trunc(c.to, 40)))
     }
   }
   return lines.join('\n')

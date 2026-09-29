@@ -207,7 +207,6 @@ export function createWrite(core, deps) {
         await writeJson(found.path, obj)
       }
       const lines = ['已更新：' + args.title]
-      if (delta.length) lines.push('【文本变更】\n' + deltaSummary(delta))
       if (candidates.length) lines.push('【待判断的历史记录（原意图是否仍保留）】\n' + candidates.map(x => '[' + x.i + '] ' + x.h.at + ' ' + opLabel(x.h.op) + (x.h.note ? ' ' + x.h.note : '') + '\n  ' + deltaSummary(x.h.delta)).join('\n') + '\n若旧意图已不符合新内容，再传 forgetIndexes=[' + candidates.map(x => x.i).join(',') + ']')
       if (mergedVariant) lines.push('已合并日期变体：' + mergedVariant)
       if (forgets.length) lines.push('遗忘更新完成：' + forgets.map(f => '[' + f.index + '] → ' + f.archivePath).join('；'))

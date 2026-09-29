@@ -382,16 +382,54 @@ export function apply(ctx) {
   function splitParagraphs(text) {
     return String(text || '').split(/\r?\n/).map(s => s.trim()).filter(s => s !== '')
   }
-  function splitSentences(para) {
-    const s = String(para || '').trim()
-    if (!s) return []
-    const out = []
-    const re = /[^。！？!?；;.]+[。！？!?；;.]*/gu
-    let m
-    while ((m = re.exec(s)) !== null) { const t = m[0].trim(); if (t) out.push(t) }
-    if (!out.length) out.push(s)
-    return out
-  }
+    const HARD_END = /[。！？!?；;]/
+    const WORD_CHAR = /[A-Za-z0-9_]/
+    const TRAILING = /[”"’'）」』】〉》\)\]]/
+    const ABBR = /(?:^|[^A-Za-z])(?:e\.g|i\.e|etc|vs|resp|approx|cf|al|mr|mrs|ms|dr|prof|st|no|fig)\.$/i
+    // '.' 是否算句末：数值（1.2）、版本号（v0.5.0）、文件名（text-utils.mjs）、路径、缩写（e.g.）、列表序号（1. ）等不算
+    function isDotBoundary(s, i) {
+      const prev = s[i - 1]
+      const next = s[i + 1]
+      if (next === undefined) return true
+      if (prev === undefined) return false
+      if (WORD_CHAR.test(prev) && WORD_CHAR.test(next)) return false
+      if (ABBR.test(s.slice(0, i + 1))) return false
+      if (isEnumMarker(s, i)) return false
+      return true
+    }
+    function isEnumMarker(s, i) {
+      const before = s.slice(0, i)
+      const m = before.match(/(\d+)$/)
+      if (!m) return false
+      const head = before.slice(0, before.length - m[1].length)
+      const atHead = head === '' || /[\s。！？!?；;]$/.test(head)
+      return atHead && /\s/.test(s[i + 1] || '')
+    }
+    function pushSlice(out, s, from, to) {
+      const t = s.slice(from, to + 1).trim()
+      if (t) out.push(t)
+    }
+    function splitSentences(para) {
+      const s = String(para || '').trim()
+      if (!s) return []
+      const out = []
+      let start = 0
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i]
+        const isDot = ch === '.'
+        if (!isDot && !HARD_END.test(ch)) continue
+        if (isDot && !isDotBoundary(s, i)) continue
+        let j = i
+        while (isDot ? s[j + 1] === '.' : (j + 1 < s.length && HARD_END.test(s[j + 1]))) j++
+        while (j + 1 < s.length && TRAILING.test(s[j + 1])) j++
+        pushSlice(out, s, start, j)
+        start = j + 1
+        i = j
+      }
+      pushSlice(out, s, start, s.length - 1)
+      if (!out.length) out.push(s)
+      return out
+    }
   function applyInverseParagraph(para, changes) {
     let s = splitSentences(para)
     for (let i = changes.length - 1; i >= 0; i--) {

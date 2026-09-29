@@ -1,4 +1,4 @@
-# 运动记忆（Motion Memory）v0.5.0
+# 运动记忆（Motion Memory）v0.5.1
 
 > 适配 DeepSeek Harness（DSH）的记忆管理插件：把会话里值得保留的内容自动沉淀为本地记忆文档，通过**对话跟踪 + 周期总结**维护一份"越用越懂你"的长期记忆。全程**本地存储、本地模型、可控可查**。
 
@@ -19,9 +19,9 @@
 **安装排错两条**：
 
 1. 包必须声明 `dsh.bundle.patch` —— 否则安装器第一道门就按 `not-a-bundle` 拒绝（本包已声明）；
-2. DSH 0.1.7 起，插件行名必须是**包根裸包名**；包内子包要用**相对路径**（写成 `<包名>/<子路径>` 会让两个界面插件的浏览器半收不到，表现为"工具和注入都在、界面整片消失"）。本包已按此写法，改动前请先读 `cordis.patch.yml` 顶部注释。
+2. 插件行名（DSH 0.2.0-rc.2 实测）：**主行用包根裸包名**，**包内子包用相对本 patch 的路径**（`./mm-settings/index.js`）—— 相对路径会被锚定到 patch 所在目录，再由 `nearestPackage()` 向上命中子包自己的 `package.json`（`dsh.client.platform=web` + `exports["./client"]`），因此**不需要在 profile 的 `node_modules` 里建任何链接**；写成 `<包名>/<子路径>` 会被判为无效、两个界面插件的浏览器半收不到，表现为"工具和注入都在、界面整片消失"。改动前请先读 `cordis.patch.yml` 顶部注释（代价：相对路径行没有中文显示名）。
 
-> **旧版安装方式（v0.4.9 及更早，已废弃）**：手工编辑 profile 的 `cordis.patch.yml` + 用 junction 把 `mm-settings` / `mm-profile` 挂进 `profile/node_modules`。那套方式在 DSH 0.1.7 下会让界面消失，且安装器无法管理；请改用上面的组合包安装。
+> **旧版安装方式（v0.4.9 及更早，已废弃）**：手工编辑 profile 的 `cordis.patch.yml` + 用 junction 把 `mm-settings` / `mm-profile` 挂进 `profile/node_modules`。那套方式安装器无法管理；自 v0.5.0 起发布面已改为相对路径写法，**链接不再需要**，请直接用上面的组合包安装。
 
 ## 版本适配（重要）
 
@@ -29,7 +29,7 @@
 
 **完整适配表已独立成文 → [COMPAT.md](COMPAT.md)**（机器可读版本是根目录 `compat.json`）。
 
-一句话：**本版 v0.5.0 的精确配对是 DSH 0.1.6-alpha.2 与 0.1.5-rc.1**；DSH 0.1.7 系列需要带 0.1.7 适配层的版本，本仓库发布面暂未包含，请不要直接安装到 0.1.7。
+一句话：**本版 v0.5.1 的精确配对是 DSH 0.2.0-rc.2**（2026-09-29 实测：`memory` / `memory_query` / `memory_add` 三个工具可用，界面半正常进客户端插件表，设置页「运动记忆」与会话「用户画像」页签可见）。DSH 0.1.x 系列本次**未复核** —— 行名已改为「主行裸包名 + 子包相对路径」，该形态依赖 0.2.0 的客户端收集路径（`pathLike` → `nearestPackage`），在 0.1.x 下请先看 [COMPAT.md](COMPAT.md) 再装。
 
 插件会自己报配对情况：设置页 →「运动记忆」→「版本与更新」、`memory cmd=status`（【版本配对】段）、`memory cmd=update`。
 
